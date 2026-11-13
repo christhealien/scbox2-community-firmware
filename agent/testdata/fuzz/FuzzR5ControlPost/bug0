@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22preset\x22:1e308,\x22confirm\x22:true}")

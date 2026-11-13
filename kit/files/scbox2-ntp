@@ -1,0 +1,74 @@
+#!/bin/sh
+# scbox2: keeps the clock set. Started once by /etc/init.d/S60wdt, runs for good.
+# Time servers, tried together, in this order:
+#   1. the ones set in the panel (Settings -> Time), /usr/config/scbox2/ntp
+#   2. the ones the router hands out by DHCP (option 42), saved by /libexec/dhcpcd-hooks/40-scbox2-ntp
+#   then, only when none of those gave a time: the public pool (0-2.pool.ntp.org), when the names resolve.
+#   The owner can switch the pool off in the panel (/usr/config/scbox2/ntp-pool = "off"): then nothing here
+#   goes to the internet (no lookups of pool.ntp.org either).
+# BusyBox 1.21 ntpd gives up for good when any server name doesn't resolve, so a name is passed on only
+# after nslookup resolves it (a LAN with its own DNS but no internet would otherwise never get a time).
+# ntpd -q sets the clock and exits; a server that never answers is given up after 60 s. After a sync the
+# loop waits an hour (or until the panel asks for a sync now); after a failure 20 s, and after 6 failures
+# in a row 5 minutes (no name lookups every 20 s, forever, on a network without a time server).
+D=/usr/config/scbox2
+NTPD=${SCBOX2_NTPD:-busybox ntpd}
+LOOKUP=${SCBOX2_LOOKUP:-nslookup}
+ONCE=$SCBOX2_ONCE # tests: one round, no waiting
+
+set -f # server names are split on spaces, never expanded as file patterns
+# an IPv4 address (each part 0-255): ntpd takes it without a lookup. Anything else that looks like one
+# (192.168.1.256) goes to nslookup, which drops it: ntpd would quit on it ("bad address"), and with it the
+# other servers of the same run (the router's too).
+isip() { echo "$1" | grep -qE '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'; }
+usable() { isip "$1" || $LOOKUP "$1" >/dev/null 2>&1; }
+
+# sync_from NAME...: one ntpd -q run with the names that resolve; 0 = the clock was set. Sets U (used names).
+sync_from() {
+	S=""
+	U=""
+	for s in "$@"; do
+		case " $U " in *" $s "*) continue ;; esac
+		if usable "$s"; then S="$S -p $s"; U="$U $s"; fi
+	done
+	[ -n "$S" ] || return 1
+	$NTPD -nqN $S >/dev/null 2>&1 &
+	p=$!
+	n=0
+	while kill -0 $p 2>/dev/null && [ $n -lt 30 ]; do sleep 2; n=$((n + 1)); done
+	if kill -0 $p 2>/dev/null; then
+		kill $p 2>/dev/null
+		wait $p 2>/dev/null
+		return 1
+	fi
+	wait $p
+}
+
+nf=0
+while true; do
+	ok=0
+	if sync_from $(cat $D/ntp 2>/dev/null) $(cat /tmp/scbox2-ntp-dhcp 2>/dev/null); then
+		ok=1
+	else
+		T=$U
+		U=""
+		if ! grep -qw off $D/ntp-pool 2>/dev/null && sync_from 0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org; then
+			ok=1
+		fi
+		[ $ok = 1 ] || U="$T$U"
+	fi
+	if [ $ok = 1 ]; then
+		echo "$(date +%s)$U" > /tmp/scbox2-ntp-last
+		rm -f /tmp/scbox2-ntp-fail
+		nf=0
+		w=180 # x 20 s = an hour
+	else
+		echo "$(date +%s)${U:- (no usable server)}" > /tmp/scbox2-ntp-fail
+		nf=$((nf + 1))
+		w=1
+		[ $nf -gt 6 ] && w=15 # 5 minutes
+	fi
+	[ -n "$ONCE" ] && exit 0
+	while [ $w -gt 0 ] && [ ! -e /tmp/scbox2-ntp-now ]; do sleep 20; w=$((w - 1)); done
+	rm -f /tmp/scbox2-ntp-now
+done

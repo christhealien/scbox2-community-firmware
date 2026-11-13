@@ -1,0 +1,51 @@
+#!/bin/sh
+# scbox2: the MAC address eth0 starts with, from the panel (Settings -> Network -> MAC address).
+# Run by /etc/init.d/S40network right after Goldshell's maccfg and before eth0 comes up, so DHCP sees the
+# right address from the first packet. On some boards maccfg can't keep an address (it can't read the board's
+# settings area) and the network chip starts with a different one at every boot; this keeps it steady.
+#
+# /usr/config/scbox2/macmode:
+#   keep    (default) the address saved in /usr/config/scbox2/mac; the first time, eth0's current one is saved
+#   random  a new locally administered address at every boot
+#   fixed   the address in /usr/config/scbox2/mac, typed in the panel
+# Only a valid unicast address is ever set; on any doubt the address is left alone.
+D=/usr/config/scbox2
+IF=${SCBOX2_IF:-eth0}
+ADDR=${SCBOX2_ADDR:-/sys/class/net/$IF/address}
+IFCONFIG=${SCBOX2_IFCONFIG:-ifconfig}
+
+valid() {
+	case "$1" in *[!0-9a-fA-F:]*) return 1 ;; esac # (one line only: grep would pass a file with two)
+	echo "$1" | grep -qiE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$' || return 1
+	case "$1" in 00:00:00:00:00:00|[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]) return 1 ;; esac
+	[ $((0x${1%%:*} & 1)) -eq 0 ] # unicast
+}
+
+mkdir -p $D $D/dhcpcd 2>/dev/null # dhcpcd keeps its leases in $D/dhcpcd (/var/db links there)
+cur=$(cat "$ADDR" 2>/dev/null | tr 'A-F' 'a-f')
+echo "$cur" > /tmp/scbox2-mac-boot 2>/dev/null # what the hardware started with, for the panel
+mode=$(cat $D/macmode 2>/dev/null)
+case "$mode" in keep|random|fixed) ;; *) mode=keep ;; esac
+
+case "$mode" in
+random)
+	mac=$(hexdump -n 5 -e '"02" 5/1 ":%02x"' /dev/urandom 2>/dev/null) ;;
+*)
+	mac=$(cat $D/mac 2>/dev/null | tr 'A-F' 'a-f')
+	if ! valid "$mac"; then
+		mac=""
+		if [ "$mode" = keep ] && valid "$cur"; then
+			echo "$cur" > $D/mac.tmp && mv $D/mac.tmp $D/mac && mac=$cur
+		fi
+	fi ;;
+esac
+
+if valid "$mac" && [ "$mac" != "$cur" ]; then
+	$IFCONFIG $IF down 2>/dev/null
+	if $IFCONFIG $IF hw ether "$mac"; then
+		echo "scbox2: $IF MAC $mac ($mode)"
+	else
+		echo "scbox2: could not set $IF MAC $mac, keeping $cur"
+	fi
+fi
+exit 0

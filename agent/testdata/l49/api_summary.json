@@ -1,0 +1,43 @@
+{
+ "STATUS": [
+  {
+   "STATUS": "S",
+   "When": 1792661443,
+   "Code": 11,
+   "Msg": "Summary",
+   "Description": "intminer 5.4.2"
+  }
+ ],
+ "SUMMARY": [
+  {
+   "Elapsed": 5,
+   "MHS av": 0.0,
+   "MHS 20s": 0.0,
+   "Found Blocks": 0,
+   "Getworks": 1,
+   "Accepted": 0,
+   "Rejected": 0,
+   "Hardware Errors": 0,
+   "Utility": 0.0,
+   "Discarded": 0,
+   "Stale": 0,
+   "Get Failures": 0,
+   "Local Work": 7,
+   "Remote Failures": 0,
+   "Network Blocks": 1,
+   "Total MH": 0.0,
+   "Diff1 Work": 0,
+   "Work Utility": 0.0,
+   "Difficulty Accepted": 0,
+   "Difficulty Rejected": 0,
+   "Difficulty Stale": 0,
+   "Best Share": 0,
+   "Device Hardware%": 0.0,
+   "Device Rejected%": 0.0,
+   "Pool Rejected%": 0.0,
+   "Pool Stale%": 0.0,
+   "Last getwork": 1792661439
+  }
+ ],
+ "id": 1
+}

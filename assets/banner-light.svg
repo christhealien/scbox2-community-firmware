@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="t d">
+<title id="t">SC Box II Community Firmware</title>
+<desc id="d">Community firmware for the SC Box II miner: a chip with 36 cells, one per ICT580 chip on the hash board.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f3f5f8"/></linearGradient>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#1a7f37" stop-opacity="0.18"/><stop offset="1" stop-color="#1a7f37" stop-opacity="0"/></radialGradient>
+<pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="#e4e8ee"/></pattern>
+</defs>
+<rect width="1280" height="320" rx="16" fill="url(#bg)"/>
+<rect x="840" y="0" width="440" height="320" fill="url(#dots)" opacity="0.9"/>
+<circle cx="1056" cy="160" r="190" fill="url(#glow)"/>
+<path d="M896 96 H934" stroke="#d0d7de" stroke-width="2" fill="none" stroke-linecap="round"/>
+<circle cx="896" cy="96" r="4" fill="#d0d7de"/>
+<path d="M910 132 H934" stroke="#d0d7de" stroke-width="2" fill="none" stroke-linecap="round"/>
+<circle cx="910" cy="132" r="4" fill="#d0d7de"/>
+<path d="M896 196 H934" stroke="#d0d7de" stroke-width="2" fill="none" stroke-linecap="round"/>
+<circle cx="896" cy="196" r="4" fill="#d0d7de"/>
+<path d="M910 232 H934" stroke="#d0d7de" stroke-width="2" fill="none" stroke-linecap="round"/>
+<circle cx="910" cy="232" r="4" fill="#d0d7de"/>
+<path d="M884 164 H934" stroke="#1a7f37" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+<circle cx="884" cy="164" r="5" fill="#1a7f37"/>
+<line x1="975" y1="38" x2="975" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="975" y1="268" x2="975" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="79" x2="948" y2="79" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="79" x2="1178" y2="79" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1002" y1="38" x2="1002" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1002" y1="268" x2="1002" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="106" x2="948" y2="106" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="106" x2="1178" y2="106" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1029" y1="38" x2="1029" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1029" y1="268" x2="1029" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="133" x2="948" y2="133" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="133" x2="1178" y2="133" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1056" y1="38" x2="1056" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1056" y1="268" x2="1056" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="160" x2="948" y2="160" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="160" x2="1178" y2="160" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1083" y1="38" x2="1083" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1083" y1="268" x2="1083" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="187" x2="948" y2="187" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="187" x2="1178" y2="187" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1110" y1="38" x2="1110" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1110" y1="268" x2="1110" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="214" x2="948" y2="214" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="214" x2="1178" y2="214" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1137" y1="38" x2="1137" y2="52" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1137" y1="268" x2="1137" y2="282" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="934" y1="241" x2="948" y2="241" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<line x1="1164" y1="241" x2="1178" y2="241" stroke="#a8b1bb" stroke-width="4" stroke-linecap="round"/>
+<rect x="948" y="52" width="216" height="216" rx="18" fill="#ffffff" stroke="#c9d1d9" stroke-width="2"/>
+<circle cx="959" cy="63" r="4" fill="#a8b1bb"/>
+<rect x="970" y="74" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1000" y="74" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1030" y="74" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1060" y="74" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1090" y="74" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1120" y="74" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="970" y="104" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1000" y="104" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1030" y="104" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1060" y="104" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1090" y="104" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1120" y="104" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="970" y="134" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1000" y="134" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1030" y="134" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1060" y="134" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1090" y="134" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1120" y="134" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="970" y="164" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1000" y="164" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1030" y="164" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1060" y="164" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1090" y="164" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1120" y="164" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="970" y="194" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1000" y="194" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1030" y="194" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1060" y="194" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1090" y="194" width="22" height="22" rx="5" fill="#1a7f37"/>
+<rect x="1120" y="194" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="970" y="224" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1000" y="224" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1030" y="224" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1060" y="224" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1090" y="224" width="22" height="22" rx="5" fill="#eef1f5" stroke="#d0d7de" stroke-width="1"/>
+<rect x="1120" y="224" width="22" height="22" rx="5" fill="#1a7f37"/>
+<text x="64" y="122" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="3" fill="#1a7f37">SC BOX II · BLAKE2B · COMMUNITY</text>
+<text x="62" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="46" font-weight="700" fill="#1f2328">SC Box II Community Firmware</text>
+<text x="64" y="224" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="23" fill="#4b5563">A modern control panel for your miner: clocks, volts, fans, pools.</text>
+<text x="64" y="268" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#6e7781">1 hash board · 36 × ICT580 · 525–690 MHz · 7.03–7.67 V</text>
+</svg>

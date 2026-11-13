@@ -1,0 +1,10 @@
+# scbox2: keep the time servers the router hands out by DHCP (option 42, which dhcpcd.conf requests)
+# for /usr/libexec/scbox2/ntp, and ask it to sync now when they change. Sourced by dhcpcd-run-hooks.
+case "$reason" in
+BOUND|RENEW|REBIND|REBOOT|INFORM|STATIC)
+	if [ -n "$new_ntp_servers" ] && [ "$new_ntp_servers" != "$(cat /tmp/scbox2-ntp-dhcp 2>/dev/null)" ]; then
+		echo "$new_ntp_servers" > /tmp/scbox2-ntp-dhcp
+		: > /tmp/scbox2-ntp-now
+	fi
+	;;
+esac

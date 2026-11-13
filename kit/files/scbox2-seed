@@ -1,0 +1,45 @@
+#!/bin/sh
+# scbox2: this miner's own random seed, kept on the config partition. The read-only system image's
+# /etc/random-seed is the same file on every unit (and can't be rewritten), so it isn't used.
+#
+#   load   S38initdir, right after /mnt/config is mounted (before the network, SSH and the panel start): mixes the
+#          saved seed and some of this unit's own state into the kernel's pool, then saves a fresh seed at once,
+#          so a seed is never used twice (not even after a power cut).
+#   save   S20urandom at shutdown, and the loop below: a fresh 512-byte seed from the pool.
+#   loop   save every 6 hours (started in the background by S48scbox2), for a power cut without a shutdown.
+#
+# Mixing data into /dev/urandom doesn't credit entropy, so it can only help; the panel still waits for the pool
+# (/dev/random readable) before it makes a key that lasts (access.go).
+SEED=${SCBOX2_SEED:-/mnt/config/random-seed}
+# (top level, not in /mnt/config/scbox2: S48's one-time move of an old settings dir needs that dir absent)
+
+save() {
+	( umask 077; dd if=/dev/urandom of="$SEED.tmp" bs=512 count=1 ) >/dev/null 2>&1 &&
+		mv -f "$SEED.tmp" "$SEED" 2>/dev/null && return 0
+	rm -f "$SEED.tmp" 2>/dev/null
+	return 1
+}
+
+case "$1" in
+load)
+	if [ -s "$SEED" ]; then
+		cat "$SEED" > /dev/urandom 2>/dev/null && echo "scbox2: random seed loaded"
+	else
+		echo "scbox2: no saved random seed yet (first start)"
+	fi
+	# this unit's own state as well (its MAC, interrupt counts, uptime): different on every unit and boot
+	cat /sys/class/net/*/address /proc/interrupts /proc/stat /proc/uptime > /dev/urandom 2>/dev/null
+	save || echo "scbox2: WARNING could not save a new random seed"
+	;;
+save)
+	save
+	;;
+loop)
+	while sleep 21600; do save; done
+	;;
+*)
+	echo "Usage: $0 {load|save|loop}" >&2
+	exit 1
+	;;
+esac
+exit 0

@@ -1,0 +1,61 @@
+#!/bin/sh
+# scbox2-sshd: the SC Box II's SSH server (port 22 unless changed in the panel's Settings -> SSH).
+#
+#   * A program of its own, started BEFORE the panel (S48scbox2) and needing nothing from it: SSH stays up when
+#     /usr/bin/scbox2-agent is damaged, can't be read or keeps crashing, so the owner can still sign in and repair
+#     the miner. It signs in with the panel's account (its login file /mnt/config/scbox2/auth.json), keeps this
+#     miner's own host key next to it, and follows the panel's SSH settings (net.json; the panel signals it with
+#     SIGHUP when they are saved). The stock OpenSSH is removed from this firmware on purpose.
+#   * Restarted if it ever exits. Its log: /tmp/scbox2-sshd.out (kept small).
+#
+# Ordering: S47, so rcS runs it after S10mdev (/dev) and S38initdir (mounts /mnt/config) and before S48scbox2.
+
+CFG=/mnt/config/scbox2
+LOG=/tmp/scbox2-sshd.out
+
+case "$1" in
+  start|"")
+	echo "Starting scbox2-sshd (SC Box II SSH)..."
+	if [ ! -x /usr/bin/scbox2-sshd ]; then
+		echo "scbox2-sshd: /usr/bin/scbox2-sshd missing; no SSH this boot"
+		exit 0
+	fi
+	# the host key is made from /dev/urandom (after the kernel's pool is seeded: the server waits for that itself)
+	i=0
+	while [ ! -e /dev/urandom ] && [ "$i" -lt 10 ]; do i=$((i + 1)); sleep 1; done
+	(
+		# like the panel: among the last things the kernel kills when memory runs out (children inherit this)
+		echo -500 > /proc/self/oom_score_adj 2>/dev/null
+		# the settings folder is S48scbox2's to make (it first moves the settings of older test builds into it, which
+		# only happens while it doesn't exist yet): on the boot that makes it, give S48 a moment before the SSH host
+		# key is saved there. S48 makes it within a second or two; nothing else waits on this (it runs in the
+		# background).
+		i=0
+		while [ ! -d $CFG ] && [ "$i" -lt 20 ] && grep -q " /mnt/config " /proc/mounts 2>/dev/null; do
+			i=$((i + 1)); sleep 1
+		done
+		while true; do
+			# keep the log small (RAM): start over past 256 KB
+			[ "$(wc -c < $LOG 2>/dev/null || echo 0)" -gt 262144 ] && : > $LOG
+			/usr/bin/scbox2-sshd -authfile /usr/config/scbox2/auth.json -netcfg /usr/config/scbox2/net.json \
+				>>$LOG 2>&1 </dev/null
+			sleep 2	# restarted if it ever exits
+		done
+	) &
+	echo $! > /var/run/scbox2-sshd.pid
+	;;
+  stop)
+	echo -n "Stopping scbox2-sshd..."
+	[ -f /var/run/scbox2-sshd.pid ] && kill $(cat /var/run/scbox2-sshd.pid) 2>/dev/null
+	killall scbox2-sshd 2>/dev/null
+	rm -f /var/run/scbox2-sshd.pid
+	;;
+  restart)
+	# a new server process (the loop restarts it): the settings are re-read; open sessions close
+	killall scbox2-sshd 2>/dev/null
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}" >&2
+	exit 1
+	;;
+esac

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22floor\x22:500}")

@@ -1,0 +1,145 @@
+#!/bin/sh
+# scbox2-agent: the SC Box II control panel (port 8080; port 80 redirects to it).
+#
+#   * Config lives on the 3 MB FAT at /mnt/config (/dev/spiblock2), mounted by S38initdir.  The panel's
+#     settings (password, SSH host key, fan/network settings, ...) are in /mnt/config/scbox2.
+#   * Updates: the root is a read-only squashfs, so the panel's Settings -> Firmware update writes a whole new
+#     system image (.ius, checked against the release, the panel password asked again) and reboots; on the
+#     owner's build only once that is commissioned. There is no rollback (the flash holds one system): an SD
+#     card with a known-good image is always the recovery, and the usual way to install.
+#   * product.json is validated and bind-mounted over /root/product.json with "wifi":0 forced on, so
+#     minerd never tries to start Wi-Fi (the board has no Wi-Fi chip; the Wi-Fi stack is removed).
+#   * Before the panel starts we require S38initdir's /mnt/config mount and a working /dev/urandom
+#     (R15: the panel seeds from /dev/urandom at start); a missing config mount raises
+#     /tmp/scbox2-cfg-broken and the panel runs read-only-config instead of writing to a dead mount.
+#
+# Ordering: this is S48, so rcS runs it AFTER S10mdev (populates /dev) and S38initdir (mounts
+# /mnt/config) and before S60wdt.  The explicit waits below are belt-and-braces, not a substitute.
+
+CFG=/mnt/config/scbox2
+OLDCFG=/mnt/config/sclite	# where test builds before v0.3.0 kept the same settings
+
+wait_for() {	# wait_for <path> <seconds> : succeed as soon as <path> exists, else time out
+	i=0
+	while [ ! -e "$1" ]; do
+		i=$((i + 1)); [ "$i" -ge "${2:-10}" ] && return 1
+		sleep 1
+	done
+	return 0
+}
+
+case "$1" in
+  start|"")
+	echo "Starting scbox2-agent (SC Box II)..."
+
+	# --- S38initdir must have mounted the config FAT.  If it did not (a corrupt or missing FAT), the
+	# panel still runs, but with config writes disabled: raise a flag the panel reads, don't wedge boot.
+	if grep -q " /mnt/config " /proc/mounts 2>/dev/null; then
+		rm -f /tmp/scbox2-cfg-broken
+		# prove it is actually writable (a FAT mounted read-only after errors=remount-ro is not)
+		if ( : > /mnt/config/.scbox2-wtest ) 2>/dev/null; then
+			rm -f /mnt/config/.scbox2-wtest
+		else
+			echo "scbox2: /mnt/config is mounted but not writable" > /tmp/scbox2-cfg-broken
+			echo "scbox2: WARNING /mnt/config not writable; config changes will not persist"
+		fi
+	else
+		echo "scbox2: /mnt/config is not mounted (S38initdir failed?)" > /tmp/scbox2-cfg-broken
+		echo "scbox2: WARNING /mnt/config not mounted; config changes will not persist"
+	fi
+
+	# --- one-time settings move from the old directory name.  A rename on the same FAT is atomic: the
+	# settings are either all under the old name or all under the new one, never split.  Only when the new
+	# directory doesn't exist yet, so it can never overwrite settings already made under the new name.
+	if [ -d $OLDCFG ] && [ ! -e $CFG ]; then
+		if mv $OLDCFG $CFG 2>/dev/null; then
+			echo "scbox2: settings moved from $OLDCFG to $CFG"
+		else
+			echo "scbox2: WARNING could not move $OLDCFG to $CFG; starting with fresh settings"
+		fi
+	fi
+	mkdir -p $CFG 2>/dev/null
+
+	# This kernel's watchdog driver deadlocks a CPU the moment /dev/watchdog is opened; there is no
+	# watchdog driver on the Box II anyway: remove the node so nothing (an older panel after an SD
+	# restore included) can open it.
+	rm -f /dev/watchdog /dev/watchdog0
+
+	# network and crash settings for this kernel (Linux 3.10 without later fixes)
+	[ -x /usr/libexec/scbox2/sysctl ] && /usr/libexec/scbox2/sysctl
+
+	rm -f /mnt/config/minerd/settings/qomo.json	# a factory Litecoin config with someone else's pools (unused)
+
+	# the miner's API: write access from 127.0.0.1 only (a config copied by an older build said "A:0/0", any
+	# address; the API is bound to loopback anyway). Rewritten only when it still says so.
+	B=/mnt/config/bfgminer/bfgminer.json
+	if grep -q '"W:127.0.0.1,A:0/0"' $B 2>/dev/null; then
+		sed 's|"W:127.0.0.1,A:0/0"|"W:127.0.0.1"|' $B > $B.tmp 2>/dev/null && grep -q '"W:127.0.0.1"' $B.tmp &&
+			mv -f $B.tmp $B && echo "scbox2: miner API limited to 127.0.0.1"
+		rm -f $B.tmp
+	fi
+
+	# this miner's random seed (loaded by S38initdir): a fresh one every 6 hours, in case the power is cut
+	[ -x /usr/libexec/scbox2/seed ] && /usr/libexec/scbox2/seed loop </dev/null >/dev/null 2>&1 &
+
+	# /etc/localtime points here; until a time zone is chosen in the panel it's Goldshell's (China, UTC+8)
+	[ -s $CFG/localtime ] || cp /etc/localtime.stock $CFG/localtime 2>/dev/null
+
+	# ---------------------------------------------------------------- product.json overlay (R15 / Wi-Fi)
+	# Goldshell's programs read each fan's max RPM from /root/product.json and flag a fan under 80 % of
+	# it.  The panel keeps a fitted copy at $CFG/product.json; where it is complete and sane we use it,
+	# otherwise the stock /root/product.json.  EITHER way we force "wifi":0 so minerd never starts the
+	# Wi-Fi stack (there is no Wi-Fi chip; the stack is removed from the image).  The chosen file is
+	# written to a tmpfs copy and bind-mounted over /root/product.json (the squashfs is read-only).
+	SRC=/root/product.json
+	P=$CFG/product.json
+	if [ -s $P ] && grep -q '"maxrpm"' $P && [ "$(tr -cd '{' < $P | wc -c)" -eq "$(tr -cd '}' < $P | wc -c)" ] &&
+		[ "$(grep -o '"maxrpm"' $P | wc -l)" -eq "$(grep -o '"maxrpm"' /root/product.json | wc -l)" ] &&
+		[ "$(grep -oE '"maxrpm"[[:space:]]*:[[:space:]]*[-0-9.]+' $P | wc -l)" -eq "$(grep -o '"maxrpm"' $P | wc -l)" ] &&
+		grep -oE '"maxrpm"[[:space:]]*:[[:space:]]*[-0-9.]+' $P | sed 's/.*://' | awk '{v=$1+0; if ($1 !~ /^[0-9]+$/ || v < 400 || v > 2200) bad=1} END {exit bad+0}'; then
+		SRC=$P
+		echo "scbox2: fan check fitted to this miner's fans"
+	fi
+	# force Wi-Fi off in whatever we are about to bind (handles a panel-written file with "wifi":1)
+	OV=/tmp/scbox2-product.json
+	sed 's/"wifi"[[:space:]]*:[[:space:]]*[0-9][0-9]*/"wifi":0/' "$SRC" > $OV 2>/dev/null
+	grep -q '"wifi"[[:space:]]*:[[:space:]]*0' $OV || sed -i 's/}[[:space:]]*$/,"wifi":0}/' $OV 2>/dev/null
+	# only bind a complete, brace-balanced result (a half-written file would stop Goldshell's programs)
+	if [ -s $OV ] && [ "$(tr -cd '{' < $OV | wc -c)" -eq "$(tr -cd '}' < $OV | wc -c)" ] &&
+		grep -q '"wifi"[[:space:]]*:[[:space:]]*0' $OV; then
+		mount -o bind $OV /root/product.json && echo "scbox2: product.json overlaid (wifi:0)"
+	else
+		echo "scbox2: WARNING product.json overlay skipped (sed/validation failed); using stock file"
+	fi
+
+	# ---------------------------------------------------------------- the panel (R15 urandom gate)
+	# The panel seeds from /dev/urandom at start; S10mdev populates /dev, so by S48 it exists, but wait
+	# briefly in case mdev is slow, and refuse to start without it rather than let the panel block.
+	if ! wait_for /dev/urandom 10; then
+		echo "scbox2: /dev/urandom missing after 10 s; not starting the panel this boot"
+		exit 0
+	fi
+
+	(
+		# the panel is among the last things the kernel kills when memory runs out (the mining program,
+		# restarted by its launcher, goes first); children inherit this. (SSH is scbox2-sshd's, started
+		# before this by S47scbox2-sshd: it doesn't need the panel.)
+		echo -500 > /proc/self/oom_score_adj 2>/dev/null
+		while true; do
+			/usr/bin/scbox2-agent -listen :8080 -log /var/log/messages >>/tmp/scbox2-agent.out 2>&1
+			sleep 5	# restarted if it ever exits
+		done
+	) &
+	echo $! > /var/run/scbox2-agent.pid
+	;;
+  stop)
+	echo -n "Stopping scbox2-agent..."
+	[ -f /var/run/scbox2-agent.pid ] && kill $(cat /var/run/scbox2-agent.pid) 2>/dev/null
+	killall scbox2-agent 2>/dev/null
+	rm -f /var/run/scbox2-agent.pid
+	;;
+  *)
+	echo "Usage: $0 {start|stop}" >&2
+	exit 1
+	;;
+esac

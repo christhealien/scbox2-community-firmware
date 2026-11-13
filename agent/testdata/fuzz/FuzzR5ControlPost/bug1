@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22freq_mhz\x22:\x22600\x22,\x22confirm\x22:true}")

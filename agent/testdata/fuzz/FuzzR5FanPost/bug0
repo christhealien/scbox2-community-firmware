@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22enabled\x22:true,\x22profile\x22:\x22custom\x22,\x22points\x22:[{\x22temp\x22:20,\x22fan\x22:10},{\x22temp\x22:100,\x22fan\x22:10}],\x22poll_s\x22:1}")

@@ -1,0 +1,31 @@
+# Build outputs
+out/
+build/
+dist/
+*.img
+*.img.xz
+*.ius
+*.sqsh
+SHA256SUMS
+
+# Go
+/agent/scbox2-agent
+/agent/sclite-agent
+*.arm
+*.test
+*.out
+coverage.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

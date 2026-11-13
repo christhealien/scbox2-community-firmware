@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22poll_s\x22:0,\x22cooldown_s\x22:-1,\x22smoothing\x22:99}")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22poll_s\x22:1e308}")

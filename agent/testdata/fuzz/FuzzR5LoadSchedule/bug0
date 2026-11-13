@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22restart\x22:{\x22every\x22:\x22hour\x22,\x22at\x22:\x2200:00\x22,\x22marks\x22:[0,1,2,3]}}")

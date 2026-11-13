@@ -1,0 +1,250 @@
+k net state...
+ [2026-11-04 01:28:45]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:28:45]  [private] 23334 open
+ [2026-11-04 01:28:45]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:28:45]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:28:49]  Start check net state...
+ [2026-11-04 01:28:49]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:28:49]  [private] 23334 open
+ [2026-11-04 01:28:49]  [Xminerd] fan0:(49, 1140)  fan1:(49, 1140)  fan2:(49, 1200)  fan3:(49, 1200)  . fan status: 0
+ [2026-11-04 01:28:49]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:28:53]  Start check net state...
+ [2026-11-04 01:28:53]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:28:53]  [private] 23334 open
+ [2026-11-04 01:28:58]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 780)  . fan status: 0
+ [2026-11-04 01:28:58]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:01]  Start check net state...
+ [2026-11-04 01:29:01]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:01]  [private] 23334 open
+ [2026-11-04 01:29:01]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 720)  fan3:(30, 780)  . fan status: 0
+ [2026-11-04 01:29:01]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:04]  Start check net state...
+ [2026-11-04 01:29:04]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:04]  [private] 23334 open
+ [2026-11-04 01:29:04]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 720)  . fan status: 0
+ [2026-11-04 01:29:04]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:07]  Start check net state...
+ [2026-11-04 01:29:07]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:07]  [private] 23334 open
+ [2026-11-04 01:29:07]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 720)  . fan status: 0
+ [2026-11-04 01:29:07]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:10]  Start check net state...
+ [2026-11-04 01:29:10]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:10]  [private] 23334 open
+ [2026-11-04 01:29:10]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 780)  . fan status: 0
+ [2026-11-04 01:29:10]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:13]  Start check net state...
+ [2026-11-04 01:29:13]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:13]  [private] 23334 open
+ [2026-11-04 01:29:13]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 780)  . fan status: 0
+ [2026-11-04 01:29:13]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:16]  Start check net state...
+ [2026-11-04 01:29:16]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:16]  [private] 23334 open
+ [2026-11-04 01:29:16]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 780)  fan3:(30, 720)  . fan status: 0
+ [2026-11-04 01:29:16]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:20]  Start check net state...
+ [2026-11-04 01:29:20]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:20]  [private] 23334 open
+ [2026-11-04 01:29:20]  [Xminerd] fan0:(30, 720)  fan1:(30, 720)  fan2:(30, 720)  fan3:(30, 780)  . fan status: 0
+ [2026-11-04 01:29:20]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:23]  Start check net state...
+ [2026-11-04 01:29:23]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:23]  [private] 23334 open
+ [2026-11-04 01:29:29]  [Xminerd] fan0:(51, 1200)  fan1:(51, 1200)  fan2:(51, 1200)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:29:29]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:32]  Start check net state...
+ [2026-11-04 01:29:32]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:32]  [private] 23334 open
+ [2026-11-04 01:29:32]  [Xminerd] fan0:(51, 1200)  fan1:(51, 1140)  fan2:(51, 1260)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:29:32]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:36]  Start check net state...
+ [2026-11-04 01:29:36]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:36]  [private] 23334 open
+ [2026-11-04 01:29:36]  [Xminerd] fan0:(53, 1200)  fan1:(53, 1200)  fan2:(53, 1260)  fan3:(53, 1260)  . fan status: 0
+ [2026-11-04 01:29:36]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:39]  Start check net state...
+ [2026-11-04 01:29:39]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:39]  [private] 23334 open
+ [2026-11-04 01:29:39]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:29:39]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:42]  Start check net state...
+ [2026-11-04 01:29:43]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:43]  [private] 23334 open
+ [2026-11-04 01:29:43]  [Xminerd] fan0:(52, 1140)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:29:43]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:46]  Start check net state...
+ [2026-11-04 01:29:46]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:46]  [private] 23334 open
+ [2026-11-04 01:29:46]  [Xminerd] fan0:(51, 1140)  fan1:(51, 1140)  fan2:(51, 1260)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:29:46]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:49]  Start check net state...
+ [2026-11-04 01:29:49]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:49]  [private] 23334 open
+ [2026-11-04 01:29:49]  [Xminerd] fan0:(51, 1140)  fan1:(51, 1140)  fan2:(51, 1200)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:29:49]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:52]  Start check net state...
+ [2026-11-04 01:29:52]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:52]  [private] 23334 open
+ [2026-11-04 01:29:52]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:29:52]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:55]  Start check net state...
+ [2026-11-04 01:29:55]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:55]  [private] 23334 open
+ [2026-11-04 01:29:55]  [Xminerd] fan0:(54, 1200)  fan1:(54, 1200)  fan2:(54, 1260)  fan3:(54, 1260)  . fan status: 0
+ [2026-11-04 01:29:55]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:29:59]  Start check net state...
+ [2026-11-04 01:29:59]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:29:59]  [private] 23334 open
+ [2026-11-04 01:29:59]  [Xminerd] fan0:(53, 1200)  fan1:(53, 1200)  fan2:(53, 1260)  fan3:(53, 1260)  . fan status: 0
+ [2026-11-04 01:29:59]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:02]  Start check net state...
+ [2026-11-04 01:30:02]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:02]  [private] 23334 open
+ [2026-11-04 01:30:02]  [Xminerd] fan0:(53, 1200)  fan1:(53, 1200)  fan2:(53, 1260)  fan3:(53, 1260)  . fan status: 0
+ [2026-11-04 01:30:02]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:05]  Start check net state...
+ [2026-11-04 01:30:05]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:05]  [private] 23334 open
+ [2026-11-04 01:30:05]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:30:05]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:08]  Start check net state...
+ [2026-11-04 01:30:08]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:08]  [private] 23334 open
+ [2026-11-04 01:30:08]  [Xminerd] fan0:(52, 1140)  fan1:(52, 1140)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:30:08]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:11]  Start check net state...
+ [2026-11-04 01:30:11]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:11]  [private] 23334 open
+ [2026-11-04 01:30:11]  [Xminerd] fan0:(51, 1200)  fan1:(51, 1200)  fan2:(51, 1260)  fan3:(51, 1260)  . fan status: 0
+ [2026-11-04 01:30:11]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:14]  Start check net state...
+ [2026-11-04 01:30:14]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:14]  [private] 23334 open
+ [2026-11-04 01:30:14]  [Xminerd] fan0:(51, 1140)  fan1:(51, 1140)  fan2:(51, 1200)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:30:14]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:17]  Start check net state...
+ [2026-11-04 01:30:17]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:17]  [private] 23334 open
+ [2026-11-04 01:30:17]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:30:17]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:21]  Start check net state...
+ [2026-11-04 01:30:21]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:21]  [private] 23334 open
+ [2026-11-04 01:30:21]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:30:21]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:24]  Start check net state...
+ [2026-11-04 01:30:24]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:24]  [private] 23334 open
+ [2026-11-04 01:30:24]  [Xminerd] fan0:(49, 1140)  fan1:(49, 1140)  fan2:(49, 1200)  fan3:(49, 1200)  . fan status: 0
+ [2026-11-04 01:30:24]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:27]  Start check net state...
+ [2026-11-04 01:30:27]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:27]  [private] 23334 open
+ [2026-11-04 01:30:27]  [Xminerd] fan0:(49, 1140)  fan1:(49, 1080)  fan2:(49, 1200)  fan3:(49, 1140)  . fan status: 0
+ [2026-11-04 01:30:27]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:30]  Start check net state...
+ [2026-11-04 01:30:30]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:30]  [private] 23334 open
+ [2026-11-04 01:30:30]  [Xminerd] fan0:(48, 1080)  fan1:(48, 1140)  fan2:(48, 1140)  fan3:(48, 1200)  . fan status: 0
+ [2026-11-04 01:30:30]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:33]  Start check net state...
+ [2026-11-04 01:30:33]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:33]  [private] 23334 open
+ [2026-11-04 01:30:35]  [Xminerd] fan0:(53, 1140)  fan1:(53, 1140)  fan2:(53, 1200)  fan3:(53, 1200)  . fan status: 0
+ [2026-11-04 01:30:35]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:38]  Start check net state...
+ [2026-11-04 01:30:38]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:38]  [private] 23334 open
+ [2026-11-04 01:30:38]  [Xminerd] fan0:(53, 1200)  fan1:(53, 1200)  fan2:(53, 1260)  fan3:(53, 1260)  . fan status: 0
+ [2026-11-04 01:30:38]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:41]  Start check net state...
+ [2026-11-04 01:30:41]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:41]  [private] 23334 open
+ [2026-11-04 01:30:41]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:30:41]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:44]  Start check net state...
+ [2026-11-04 01:30:44]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:44]  [private] 23334 open
+ [2026-11-04 01:30:44]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:30:44]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:47]  Start check net state...
+ [2026-11-04 01:30:47]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:47]  [private] 23334 open
+ [2026-11-04 01:30:47]  [Xminerd] fan0:(51, 1140)  fan1:(51, 1140)  fan2:(51, 1260)  fan3:(51, 1200)  . fan status: 0
+ [2026-11-04 01:30:47]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:50]  Start check net state...
+ [2026-11-04 01:30:50]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:50]  [private] 23334 open
+ [2026-11-04 01:30:51]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:30:51]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:54]  Start check net state...
+ [2026-11-04 01:30:54]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:54]  [private] 23334 open
+ [2026-11-04 01:30:54]  [Xminerd] fan0:(50, 1140)  fan1:(50, 1140)  fan2:(50, 1200)  fan3:(50, 1200)  . fan status: 0
+ [2026-11-04 01:30:54]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:30:57]  Start check net state...
+ [2026-11-04 01:30:57]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:30:57]  [private] 23334 open
+ [2026-11-04 01:30:57]  [Xminerd] fan0:(49, 1140)  fan1:(49, 1140)  fan2:(49, 1200)  fan3:(49, 1200)  . fan status: 0
+ [2026-11-04 01:30:57]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:00]  Start check net state...
+ [2026-11-04 01:31:00]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:00]  [private] 23334 open
+ [2026-11-04 01:31:00]  [Xminerd] fan0:(49, 1080)  fan1:(49, 1140)  fan2:(49, 1200)  fan3:(49, 1200)  . fan status: 0
+ [2026-11-04 01:31:00]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:03]  Start check net state...
+ [2026-11-04 01:31:03]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:03]  [private] 23334 open
+ [2026-11-04 01:31:03]  [Xminerd] fan0:(48, 1080)  fan1:(48, 1080)  fan2:(48, 1140)  fan3:(48, 1200)  . fan status: 0
+ [2026-11-04 01:31:04]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:07]  Start check net state...
+ [2026-11-04 01:31:07]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:07]  [private] 23334 open
+ [2026-11-04 01:31:07]  [Xminerd] fan0:(48, 1080)  fan1:(48, 1080)  fan2:(48, 1140)  fan3:(48, 1140)  . fan status: 0
+ [2026-11-04 01:31:07]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:10]  Start check net state...
+ [2026-11-04 01:31:10]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:10]  [private] 23334 open
+ [2026-11-04 01:31:10]  [Xminerd] fan0:(47, 1080)  fan1:(47, 1080)  fan2:(47, 1140)  fan3:(47, 1140)  . fan status: 0
+ [2026-11-04 01:31:10]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:13]  Start check net state...
+ [2026-11-04 01:31:13]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:13]  [private] 23334 open
+ [2026-11-04 01:31:13]  [Xminerd] fan0:(47, 1080)  fan1:(47, 1080)  fan2:(47, 1140)  fan3:(47, 1140)  . fan status: 0
+ [2026-11-04 01:31:13]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:16]  Start check net state...
+ [2026-11-04 01:31:16]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:16]  [private] 23334 open
+ [2026-11-04 01:31:16]  [Xminerd] fan0:(46, 1080)  fan1:(46, 1080)  fan2:(46, 1140)  fan3:(46, 1140)  . fan status: 0
+ [2026-11-04 01:31:16]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:19]  Start check net state...
+ [2026-11-04 01:31:19]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:19]  [private] 23334 open
+ [2026-11-04 01:31:19]  [Xminerd] fan0:(46, 1080)  fan1:(46, 1080)  fan2:(46, 1140)  fan3:(46, 1140)  . fan status: 0
+ [2026-11-04 01:31:19]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:22]  Start check net state...
+ [2026-11-04 01:31:22]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:22]  [private] 23334 open
+ [2026-11-04 01:31:22]  [Xminerd] fan0:(45, 1020)  fan1:(45, 1020)  fan2:(45, 1080)  fan3:(45, 1080)  . fan status: 0
+ [2026-11-04 01:31:22]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:25]  Start check net state...
+ [2026-11-04 01:31:25]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:25]  [private] 23334 open
+ [2026-11-04 01:31:26]  [Xminerd] fan0:(53, 1140)  fan1:(53, 1140)  fan2:(53, 1200)  fan3:(53, 1200)  . fan status: 0
+ [2026-11-04 01:31:26]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:29]  Start check net state...
+ [2026-11-04 01:31:29]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:29]  [private] 23334 open
+ [2026-11-04 01:31:30]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:31:30]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:33]  Start check net state...
+ [2026-11-04 01:31:33]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:33]  [private] 23334 open
+ [2026-11-04 01:31:33]  [Xminerd] fan0:(52, 1200)  fan1:(52, 1200)  fan2:(52, 1260)  fan3:(52, 1260)  . fan status: 0
+ [2026-11-04 01:31:33]  [Xminerd] NCF(0,1,0,0, 0)
+ [2026-11-04 01:31:36]  Start check net state...
+ [2026-11-04 01:31:36]  Inverse name lookup failed for `[private]'
+ [2026-11-04 01:31:36]  [private] 23334 open
+ [2026-11-04 01:31:36]  [Xminerd] fan0:(51, 1200)  fan1:(51, 1200)  fan2:(51, 1260)  fan3:(51, 1260)  . fan status: 0
+ [2026-11-04 01:31:36]  [Xminerd] NCF(0,1,0,0, 0)

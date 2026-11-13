@@ -1,0 +1,36 @@
+#!/bin/sh
+# scbox2: kernel / network settings at boot (Linux 3.10.0-infotm, no backported fixes).
+# Run once from S48scbox2 start (before the panel). Every write is guarded: a missing knob is skipped.
+# SYSCTL_ROOT lets tests point it at a fake /proc/sys.
+P=${SYSCTL_ROOT:-/proc/sys}
+ok=0; miss=""
+set_() { if [ -w "$P/$1" ] && echo "$2" > "$P/$1" 2>/dev/null; then ok=$((ok + 1)); else miss="$miss $1"; fi; }
+
+# a kernel crash recovers itself: reboot 10 s after a panic (compiled default is 5; keep it explicit).
+# panic_on_oops is set by the panel after 10 min uptime (an oops that repeats at every boot must not
+# turn into a reboot loop). This kernel has no softlockup/hung-task detector: those knobs don't exist.
+set_ kernel/panic 10
+
+# TCP: CVE-2016-5696 (off-path inference of the pool connection via the global challenge-ACK limit:
+# lets an attacker on the Internet inject into the plain-text stratum stream)
+set_ net/ipv4/tcp_challenge_ack_limit 999999999
+# CVE-2019-11477/11478 (SACK panic / SACK slowness: any TCP peer can crash or stall the kernel)
+set_ net/ipv4/tcp_sack 0
+# CVE-2018-5391 (FragmentSmack: IP fragment reassembly CPU exhaustion)
+set_ net/ipv4/ipfrag_high_thresh 262144
+set_ net/ipv4/ipfrag_low_thresh 196608
+set_ net/ipv4/tcp_syncookies 1
+
+# Not changed on purpose: ICMP redirects and rp_filter. On a network where the owner's PC sits behind a second
+# router on the same LAN (a "gateway"), the main router's redirect is what sends the miner's replies straight
+# back to that router; without it they go the long way and a router that drops asymmetric traffic loses them
+# (the likely cause in the first v1.5.15 test: the miner mined, but its panel and ping were gone from the
+# owner's PC). Stock values stay; only source routing is switched off.
+for c in all default; do
+	set_ net/ipv4/conf/$c/accept_source_route 0
+	set_ net/ipv6/conf/$c/accept_source_route 0
+done
+set_ net/ipv4/icmp_echo_ignore_broadcasts 1
+set_ net/ipv4/icmp_ignore_bogus_error_responses 1
+
+echo "scbox2: kernel settings: $ok set${miss:+, not available:$miss}"

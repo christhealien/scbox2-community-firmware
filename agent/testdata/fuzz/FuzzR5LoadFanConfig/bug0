@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22enabled\x22:true,\x22profile\x22:\x22curve-balanced\x22,\x22abort_c\x22:0}")

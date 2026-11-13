@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\x22abort_c\x22:-1e308}")
