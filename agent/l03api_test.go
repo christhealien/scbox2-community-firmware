@@ -376,7 +376,7 @@ var l03Skip = map[string]string{
 	"/api/net": "runs `hostname` as root", "/api/reboot": "runs reboot", "/api/verbose": "runs killall",
 	"/api/time": "settimeofday", "/api/ssh": "opens a listener", "/api/activity/stream": "stream",
 	"/api/engine/stream": "stream", "/api/log/stream": "stream", "/api/update/upload": "shared /tmp stage",
-	"/api/notify/test": "network", "/api/fancheck": "runs Goldshell's fan test",
+	"/api/notify/test": "network", "/api/fancheck": "runs the OEM fan test",
 }
 
 func TestL03HostileBodies(t *testing.T) {

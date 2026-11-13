@@ -2,7 +2,7 @@ package main
 
 // Low fan speeds. Fans better than stock may run very low, so the panel's floor is 10 % (it was 30 % for
 // fan curves and the tuner's fan hold, which the tuner's own "never below 20 %" couldn't get under).
-// What stops it going too low is the miner itself: Goldshell's watchdog measures every fan and stops mining
+// What stops it going too low is the miner itself: the OEM's watchdog measures every fan and stops mining
 // while one looks failed (a fan that stops turning at low duty reads 0 RPM; one that turns too slowly for the
 // firmware is flagged too). When the watchdog flags a turning fan while the panel runs the fans below 50 %,
 // the panel raises its own floor 10 % above what tripped it and keeps it there until the fan settings are
@@ -21,7 +21,7 @@ const fanGuardMax = 50 // the guard never forces more than this: above it a flag
 
 // --- mining-blind guard (no board temperature at all while hashing) ---
 //
-// Goldshell's fan controller (fanctrl) runs the fans at full when it loses every sensor but never shuts the
+// The OEM's fan controller (fanctrl) runs the fans at full when it loses every sensor but never shuts the
 // boards down for heat (traced). So the panel parks the miner itself after a spell with no temperature at
 // all while hashing. The SC Box II is stricter: R11 F4 — its fanctrl likewise never stops without a reading,
 // and the panel cannot see the boards' heat, so it parks after 30 s rather than SC Lite's 3 minutes. With no

@@ -79,7 +79,7 @@ func TestB9SCLiteModelJSONUnchanged(t *testing.T) {
 		t.Errorf("name = %v, want SC Lite", m["name"])
 	}
 	// MCUTOFF()/MABORT() in the JS fall back to these, so the fan-curve safety text renders exactly
-	// "70–90 °C (Goldshell takes over at 92 °C)" — byte-identical to the pre-port UI.
+	// "70–90 °C (the OEM firmware takes over at 92 °C)".
 	if got, _ := m["temp_cutoff"].(float64); got != 92 {
 		t.Errorf("temp_cutoff = %v, want 92", m["temp_cutoff"])
 	}

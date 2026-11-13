@@ -6,7 +6,7 @@ package main
 //
 // Background. On the SC Lite the thermal guard / pool guard / fan lock park the miner by selecting the
 // firmware's own idle plan (applyIdle: 0 MHz, boards powered down). The SC Box II stock plans have NO idle
-// entry, so there is nothing to select. What Goldshell's own stack does instead (traced, lane C1):
+// entry, so there is nothing to select. What the OEM's own stack does instead (traced, lane C1):
 //   - minerd's overheat path ("CPB%d Overheat, So Shutdown It") and its PUT /cpb/control board switch send
 //     {"command":"pgadisable","parameter":"%d"} / pgaenable to the miner API (R13 box2_minerd 0x16a1e, 0x19146).
 //   - In intminer (BFGMiner 5.4.2 + gsscbox2) pgadisable sets the board's disable flag; the board's mining
@@ -20,7 +20,7 @@ package main
 //   - at once: `devs` must list every board "Enabled":"N" (the miner took the flag);
 //   - then, from a watch loop every 10 s: the board's work counter ("Total MH") must stop growing within
 //     box2ConfirmWindow, and its temperature must not keep rising. If it does not stop, the stop is reported as
-//     IGNORED: fans to 100 % (through the stock plan), a notification, and Goldshell's 86 °C cut-off is the
+//     IGNORED: fans to 100 % (through the stock plan), a notification, and the OEM's 86 °C cut-off is the
 //     backstop; the guards then see "not parked" and take their own fall-backs again;
 //   - a mining program that restarts while idle (the stock launcher relaunches it; a fresh process has every
 //     board enabled) is caught by the same loop ("Enabled":"Y" while the panel holds the board off) and the stop
@@ -66,7 +66,7 @@ var (
 	box2Now           = time.Now
 	box2FansMax       = box2FansMaxPlan
 	box2RestartMining = restartMiner
-	// box2OverTemp: Goldshell's own over-temperature shutdown happened this boot (its fanctrl log). The panel
+	// box2OverTemp: the OEM's own over-temperature shutdown happened this boot (its fanctrl log). The panel
 	// never re-enables a board after that: the cut-off keeps it off until a reboot, as on stock.
 	box2OverTemp = func() bool { return overTempView() != nil }
 )
@@ -218,7 +218,7 @@ func resumeAction(m modelProfile) error {
 		return &resumeHeldErr{err}
 	}
 	if why := box2CutoffHolds(); why != "" {
-		// never undo Goldshell's own heat shutdown: the board stays off (until a reboot), the idle stays held
+		// never undo the OEM's own heat shutdown: the board stays off (until a reboot), the idle stays held
 		return fmt.Errorf("the board is not re-enabled: %s — it stays off until the miner reboots (%s cut-off)", why, oemPoss())
 	}
 	n, total, err := box2ResumeVerified()
@@ -260,7 +260,7 @@ func box2WakeResume(gen int64) error {
 		if errors.As(err, &held) {
 			return held
 		}
-		activity.emit("▶ resume: " + err.Error()) // (Goldshell's cut-off holds the board: logged, the write goes on)
+		activity.emit("▶ resume: " + err.Error()) // (the OEM's cut-off holds the board: logged, the write goes on)
 	}
 	if genMoved(gen) {
 		return errSafetyStop
@@ -534,7 +534,7 @@ func apiStatusMsg(out []byte) string {
 	return strings.TrimSpace(s)
 }
 
-// box2CutoffHolds: why the board must not be re-enabled ("" = it may): Goldshell's over-temperature shutdown
+// box2CutoffHolds: why the board must not be re-enabled ("" = it may): the OEM's over-temperature shutdown
 // happened (its log), or the miner flags a board as overheated.
 func box2CutoffHolds() string {
 	if box2OverTemp() {

@@ -1,10 +1,10 @@
 package main
 
-// Goldshell's over-temperature shutdown (fanctrl, traced): every 6 s it reads each board's sensor; over
+// The OEM's over-temperature shutdown (fanctrl, traced): every 6 s it reads each board's sensor; over
 // tempcutoff (product.json: 92 °C on the SC Lite, 86 °C on the SC Box II) all fans go to 100 %, and after
 // more than 5 readings in a row over it logs "Disable CPB, For Temperature Is Greater Than <cutoff>",
 // powers the boards down, kills the mining program and sets miner_state 0x80. Only a reboot (or a restart
-// of Goldshell's watchdog, which the panel therefore refuses while this shows) clears 0x80, so the watchdog
+// of the OEM's watchdog, which the panel therefore refuses while this shows) clears 0x80, so the watchdog
 // keeps the miner on Idle until then, and nothing on the Dashboard said why. The cut-off temperature is
 // read from fanctrl's own log line (the regex captures it), never assumed, so this works on any model. This
 // finds that line (since the current boot) in fanctrl's own log and shows it.
@@ -72,7 +72,7 @@ func overTempView() *overTempState {
 	}
 	otCheckedAt = time.Now()
 	otCached = nil
-	for _, gl := range goldshellLogs() {
+	for _, gl := range oemLogs() {
 		if !strings.Contains(gl[0], "fanctrl") {
 			continue
 		}

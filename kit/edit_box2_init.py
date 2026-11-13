@@ -17,8 +17,8 @@ Nothing here removes the Wi-Fi / OpenSSH binaries themselves: those are reclaime
 ``removals_box2.py`` (so the squashfs actually shrinks).  This module only rewrites the *scripts and account
 files* that reference them.
 
-NOTE on /etc/hosts: the SC Lite kit adds ``127.0.0.1 hub.goldshell.com`` / ``find.goldshell.com`` redirect
-lines.  On the Box II those two hostnames are scrubbed *out of the binaries* by A3's string overwrites (per
+NOTE on /etc/hosts: the SC Lite kit adds ``127.0.0.1`` redirect lines for the OEM cloud's two host names (its
+MQTT hub and miner finder).  On the Box II those two hostnames are scrubbed *out of the binaries* by A3's string overwrites (per
 A2's --check gate, which greps the final image for those literals and would FAIL if we also wrote them into
 /etc/hosts).  So B8 adds ONLY the ``127.0.0.2 <name>-netcheck`` reverse name xminerd's on-box check needs.
 """
@@ -217,7 +217,7 @@ def edit_s20urandom(t):
 
 # ---------------------------------------------------------------- /etc/init.d/S40network (MAC address)
 def edit_s40network(t):
-    """Run /etc/scbox2-mac (the panel's MAC setting: keep / random / fixed) right after Goldshell's maccfg and
+    """Run /etc/scbox2-mac (the panel's MAC setting: keep / random / fixed) right after the OEM's maccfg and
     before eth0 comes up, so DHCP sees the right address from the first packet (as the SC Lite's build.py does
     for /etc/sclite-mac).  The config partition is mounted by S38initdir before this."""
     _assert_md5(t, "/etc/init.d/S40network")
@@ -279,8 +279,8 @@ def edit_mdev_mounts(t):
 def edit_shadow(t, root_hash=None):
     """In BOTH /etc/shadow and its backup /etc/shadow-: disable the empty-password ``default`` account
     (``default::`` -> ``default:*:``) and replace root's unknown stock DES hash with the known $1$ (MD5-crypt)
-    recovery hash.  There is no ``goldshell`` user on the Box II, so (unlike SC Lite) it is NOT in the table; a
-    ``goldshell`` line, if a future stock revision adds one, is disabled too."""
+    recovery hash.  There is no OEM-named stock account on the Box II, so (unlike SC Lite) it is NOT in the table;
+    such a line, if a future stock revision adds one, is disabled too."""
     rh = root_hash or RECOVERY_ROOT_HASH
     for sh in ("/etc/shadow", "/etc/shadow-"):
         if not t.exists(sh):
@@ -293,7 +293,8 @@ def edit_shadow(t, root_hash=None):
         elif not re.search(r"(?m)^default:(\*|!)", s):
             raise Fail("%s: the 'default' account is neither empty-password nor already disabled" % sh)
 
-        # 1b. a 'goldshell' account should not exist on the Box II; disable it if a revision adds one
+        # 1b. the SC Lite's OEM-named stock account (its name below, as the stock /etc/shadow spells it) should
+        #     not exist on the Box II; disable it if a revision adds one
         m = re.search(r"(?m)^goldshell:([^:]*):", s)
         if m and m.group(1) not in ("*", "") and not m.group(1).startswith("!"):
             s = s[:m.start(1)] + "*" + s[m.end(1):]
@@ -320,10 +321,10 @@ def edit_shadow(t, root_hash=None):
 # ---------------------------------------------------------------- /etc/hosts
 def edit_hosts(t, netcheck_name="scbox2"):
     """Add ONLY the 127.0.0.2 reverse name xminerd's on-box internet check resolves to (the panel).  NO
-    hub/find.goldshell.com lines (those are scrubbed from the binaries by A3; writing them here would fail
+    lines for the OEM cloud's hosts (those are scrubbed from the binaries by A3; writing them here would fail
     build_box2 --check)."""
     s = t.text("/etc/hosts").rstrip("\n")
-    for bad in ("hub.goldshell.com", "find.goldshell.com"):
+    for bad in ("hub.goldshell.com", "find.goldshell.com"):  # the OEM cloud's hosts (functional: the gate's patterns)
         if bad in s:
             raise Fail("/etc/hosts unexpectedly already contains %r (A3 scrubs these from binaries, not hosts)" % bad)
     line = "127.0.0.2\t%s-netcheck" % netcheck_name

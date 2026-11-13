@@ -50,7 +50,7 @@ func TestTrimsNotNeededAtConfirmed(t *testing.T) {
 	}
 }
 
-// The owner's run ended its presets phase on a 3-minute gap in the chip readings (Goldshell's backend answered
+// The owner's run ended its presets phase on a 3-minute gap in the chip readings (the OEM's backend answered
 // "HTTP 500" while mining went on). A gap that ends within the grace time restarts the test instead.
 func TestTunerReadingGapRestartsTest(t *testing.T) {
 	c := fastCfg()

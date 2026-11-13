@@ -4,7 +4,7 @@ package main
 //
 // The SC Lite installs a file-level package onto its writable root (update.go). The SC Box II's root is a
 // read-only squashfs on its own SPI-flash disk, /dev/spiblock1 ("system", 18,874,368 bytes; kernel log:
-// "spi add disk dev system 820000 1200000"). Its firmware is a Goldshell "+ius" container (kit/tools/ius.py),
+// "spi add disk dev system 820000 1200000"). Its firmware is an OEM "+ius" container (kit/tools/ius.py),
 // which every port build makes from the stock 2.2.1 container by replacing ONLY the system item.
 //
 // What this does, and nothing else (see C9 REPORT.md for the evidence and the safety argument):
@@ -130,7 +130,7 @@ func imgPendingPath() string { return filepath.Join(updDir(), "image-pending") }
 type iusInfo struct {
 	Size      int64  `json:"size"`
 	SHA256    string `json:"sha256"`
-	SWVersion string `json:"sw_version"` // Goldshell's field ("2.2.1" in every port build)
+	SWVersion string `json:"sw_version"` // the OEM's field ("2.2.1" in every port build)
 	SysOff    int64  `json:"sys_off"`
 	SysLen    int64  `json:"sys_len"`
 	SysMD5    string `json:"sys_md5"`

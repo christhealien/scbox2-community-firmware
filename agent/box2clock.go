@@ -19,7 +19,7 @@ package main
 //   - clock: the profile window [FreqMin, FreqMax] = [525, 690] (the two stock clocks). Above 690 is lane C7.
 //   - V with VoltageControl ON: an integer in the stock codes' closed interval [42, 61].
 //   - V with VoltageControl OFF: the code of a stock plan that runs at this clock or FASTER (so a voltage
-//     Goldshell itself runs at a clock at least this high). Default = the nearest such plan: 690 MHz/42 for
+//     the stock firmware itself runs at a clock at least this high). Default = the nearest such plan: 690 MHz/42 for
 //     any clock above 525, 525 MHz/61 at 525. This rule does not depend on which way the code moves the rail
 //     voltage: every (clock, V) it allows is a stock (clock', V) with clock' ≥ clock.
 //   - every change of clock or V is confirmed from the miner API (devs) and, on a mismatch or no answer,
@@ -261,7 +261,7 @@ func box2ReadText(v float64) string {
 // By design this can be the stock 690 MHz plan even while hot (the thermal throttle's step down to a non-stock
 // clock that the miner didn't confirm): an unconfirmed clock is not trusted, a stock plan is, and the heat is
 // handled by the guards above it (the throttle steps again at its next tick, the thermal guard parks, the fans
-// stay at the heat guard's duty, Goldshell's cut-off is the backstop).
+// stay at the heat guard's duty, the OEM's cut-off is the backstop).
 //
 // A chip trimmed "+" that would run past the clock window at the plan before (the trims changed since) sends it to
 // the lowest-clock stock plan too: the revert runs under planMu (and, from Controls, under controlMu), so it can't
@@ -376,7 +376,7 @@ func box2ControlInfo() map[string]any {
 		"voltage_control":  model.Feat.VoltageControl,
 		"clock":            []int{lo, hi},
 		"v_codes":          []int{vlo, vhi},
-		"v_is_code":        true, // Goldshell's voltage LEVEL, not millivolts (and no PV): a higher level is a lower voltage (C4)
+		"v_is_code":        true, // the OEM's voltage LEVEL, not millivolts (and no PV): a higher level is a lower voltage (C4)
 		"v_higher_is_less": model.VCodeDir == vcodeUpIsLess,
 		"v_rule":           box2VRuleText(),
 		"pll_note":         "the chips run floor(MHz ÷ 12.5) × 12.5 between 500 and 1487.5 MHz (690 → 687.5)",

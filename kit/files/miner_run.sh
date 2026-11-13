@@ -14,11 +14,11 @@
 # this loop relaunches with the updated config, exactly as xminerd would on stock. It never starts a second
 # miner if one is already running.
 #
-# One miner only: Goldshell's xminerd also starts the miner once its network check passes (~40 s after boot).
+# One miner only: the OEM's xminerd also starts the miner once its network check passes (~40 s after boot).
 # The wrapper allows a single running miner (an flock the miner holds for its life); whichever start comes
 # second exits at once with status 75. This loop then simply waits and checks again.
 #
-# Start tries: the wrapper runs the guarded miner copy (/usr/libexec/scbox2/hook/intminer: Goldshell's miner
+# Start tries: the wrapper runs the guarded miner copy (/usr/libexec/scbox2/hook/intminer: the OEM's miner
 # plus this firmware's fixes) at most 3 starts in a row (markers /tmp/scbox2-guard.N, cleared by the panel once
 # mining has run 2 minutes) and then falls back to the unmodified stock miner. Those tries are there to catch
 # the guarded copy CRASHING (killed by a signal). A miner that exits by itself within a minute -- "No servers

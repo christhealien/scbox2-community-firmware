@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// A fan-test re-run first puts the miner on Idle, which needs Goldshell's backend, which needs the mining
+// A fan-test re-run first puts the miner on Idle, which needs the OEM's backend, which needs the mining
 // program. When the miner is restarting or has just booted (the mining program isn't running) the re-run
 // used to go ahead and fail half-way at applyIdle, raising a ⚠ warning + notification — even though a reboot
-// runs Goldshell's fan test anyway. It now refuses up front with a plain message and starts nothing.
+// runs the OEM's fan test anyway. It now refuses up front with a plain message and starts nothing.
 func TestR25FanRerunRefusedWhileMinerDown(t *testing.T) {
 	// clean guards: not over-temp, not tuner/ceiling, not strong-chip test
 	setCharge("")

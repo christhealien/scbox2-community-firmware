@@ -1,11 +1,11 @@
 package main
 
 // Keeping evidence for later (v1.5.19). An owner's board dropped out at about 1 pm; by the time they exported
-// the logs that evening, Goldshell's logs only went back half an hour to a few hours, and the panel's own
+// the logs that evening, the OEM's logs only went back half an hour to a few hours, and the panel's own
 // activity feed lived only in the open page. Now:
 //   - the panel's events (the activity feed) are kept, the last 500 lines, saved every 10 minutes and at an
 //     incident, and go into the private log export as panel-events.txt;
-//   - when a hash board stops hashing, the mining log and Goldshell's logs as they are then are saved
+//   - when a hash board stops hashing, the mining log and the OEM's logs as they are then are saved
 //     (gzip, the last 2 incidents) and go into the export as incident-*.txt.
 // Both are redacted like every other file in the private export.
 
@@ -109,7 +109,7 @@ var incidentLogs = func() map[string]string {
 	if t, err := minerLogText(); err == nil {
 		out["mining-log"] = t
 	}
-	for _, gl := range goldshellLogs() {
+	for _, gl := range oemLogs() {
 		if t, err := tailFile(gl[1], 200<<10); err == nil {
 			out[strings.TrimSuffix(gl[0], ".txt")] = t
 		}

@@ -146,7 +146,7 @@ HTML/JS) isn't still served to the LAN:
   **keep the backend handlers** (`/mcb`, `/dbg`, `/user/login`) the agent depends on. Confirm those
   three still answer on `127.0.0.1:80` after removal.
 - Boot the image and load the miner's IP in a browser: you should get **only** the SC Lite agent,
-  never the Goldshell UI.
+  never the OEM UI.
 
 **SD card: upgrades/flashing only — never the running rootfs.** Confirm the built firmware runs
 entirely from **internal eMMC/flash**, and that the SD card is used only as an upgrade/recovery
@@ -173,7 +173,7 @@ the SC Lite's bootrom supports (from the Phase‑2 work):
 1. Assemble the Phase‑2 rootfs with: cloud daemons removed (§3), old UI handled (§5), ports set (§4),
    the **audited agent binary** placed at its path, and `S48sclite` installed so it auto-starts
    (the agent writes this itself via `-install-service`; see §7).
-2. Pack it into the SD recovery image the InfoTM/Goldshell bootrom expects (the format your Phase‑2
+2. Pack it into the SD recovery image the InfoTM/OEM bootrom expects (the format your Phase‑2
    produced — `.img` written with `dd`/Balena Etcher, or the vendor's SD-update layout).
 3. End user: write the image to an SD, insert, power-on to flash internal eMMC, **remove the SD**,
    reboot. First boot: browse to the miner IP → forced password change (admin/admin is locked until

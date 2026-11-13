@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Box II: Goldshell's two stock modes read "Stock High" (690 MHz; also the factory "Stock") and "Stock Low" (525 MHz)
+// Box II: the OEM's two stock modes read "Stock High" (690 MHz; also the factory "Stock") and "Stock Low" (525 MHz)
 // in every Go text a person sees; the keys ("Hashrate", "Low-power", "Stock", "preset:Hashrate") stay as they were.
 // The SC Lite's texts are unchanged.
 

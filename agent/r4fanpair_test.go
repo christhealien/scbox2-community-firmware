@@ -74,7 +74,7 @@ func TestR4HandlerOffZeroWhileHot(t *testing.T) {
 	}
 }
 
-// The handler's "offset 0" write ignores the skips: during Goldshell's start-up fan test it writes fans 2+3
+// The handler's "offset 0" write ignores the skips: during the OEM's start-up fan test it writes fans 2+3
 // (and clamps them to the raised floor, so they differ from what the test set).
 func TestR4HandlerOffZeroDuringFanTest(t *testing.T) {
 	r4fpSetup(t, -10, 10, 10, 10, 10) // the fan test's 10 % step
@@ -109,7 +109,7 @@ func TestR4OffsetStuckAfterRace(t *testing.T) {
 	}
 }
 
-// Idle: "left to Goldshell on Idle". The kick after the Idle write uses the idle answer cached up to 30 s
+// Idle: "left to the OEM fan control on Idle". The kick after the Idle write uses the idle answer cached up to 30 s
 // earlier ("not idle") and applies the offset on Idle anyway.
 func TestR4OffsetAppliedRightAfterIdle(t *testing.T) {
 	r4fpSetup(t, 10, 60, 60, 70, 70)

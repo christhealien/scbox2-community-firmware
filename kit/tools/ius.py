@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ius.py - InfoTM "+ius" burn container tool (Goldshell SC Box II firmware.ius, also SC Lite burn images).
+ius.py - InfoTM "+ius" burn container tool (SC Box II firmware.ius, also SC Lite burn images).
 
     ius.py info    FILE                       list header + items (FILE may be a .ius or a raw SD image with +ius at 16 MiB)
     ius.py extract FILE OUTDIR                write every item + manifest.json (enough to rebuild the file byte for byte)

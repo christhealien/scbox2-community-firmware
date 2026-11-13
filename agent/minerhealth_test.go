@@ -83,14 +83,14 @@ func TestReleaseWarning(t *testing.T) {
 	}
 }
 
-func TestGoldshellLogsRedacted(t *testing.T) {
+func TestOEMLogsRedacted(t *testing.T) {
 	d := t.TempDir()
 	old := backupRoot
 	backupRoot = d
 	t.Cleanup(func() { backupRoot = old })
 	os.MkdirAll(filepath.Join(d, "minerd/trash"), 0o755)
 	os.WriteFile(filepath.Join(d, "minerd/trash/syslog"), []byte(" [x] hardware_barcode->cpbsn[1]: SCL0PSA3019015F114032BAF070\n [x] hardware_barcode->boxsn: SCL0BS403000B25E93\n"), 0o644)
-	t2, err := tailFile(goldshellLogs()[2][1], 1<<20)
+	t2, err := tailFile(oemLogs()[2][1], 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestVersionLessLabels(t *testing.T) {
 
 func TestLearnedSuspect(t *testing.T) {
 	v := watchdogView{Fans: []int{780, 840, 840, 840}, Duty: []int{33, 33, 33, 33}, Status: 1}
-	// "Re-run Goldshell's fan test" on the SC Lite build, "Re-run the OEM fan test" on the SC Box II build
+	// "Re-run the OEM fan test" (oemOf)
 	if !learnedSuspect(v) || !strings.Contains(watchdogMessage(v), "Re-run "+oemOf()+" fan test") {
 		t.Fatal("today's case (fan0 at its partner's speed) not recognised")
 	}

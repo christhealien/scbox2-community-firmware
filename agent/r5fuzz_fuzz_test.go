@@ -422,7 +422,7 @@ func FuzzR5FanCheckPost(f *testing.F) {
 		}
 		json.Unmarshal(body, &probe)
 		if probe.Rerun {
-			return // restarts Goldshell's watchdog: not here
+			return // restarts the OEM's watchdog: not here
 		}
 		dir := r5Env(t)
 		productPath = dir + "/root-product.json"

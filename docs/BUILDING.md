@@ -61,6 +61,18 @@ script renames the module to `scbox2-agent` in its scratch copy. Running `go bui
 but it **needs `-tags scbox2,public`** (without `scbox2` it builds the SC Lite panel), and the binary won't be
 byte-identical to a release's, because the module name is part of it.
 
+### The SSH server
+
+SSH is its own small program (`agent/cmd/scbox2-sshd`), so SSH keeps working if the panel can't start. Build it
+from the repository root the same way:
+
+```sh
+kit/tools/build-sshd-box2.sh agent out/scbox2-sshd
+```
+
+The script refuses a binary that links anything of the panel beyond `internal/sshcore` and `internal/authfile`.
+The same SSH server goes with either panel build.
+
 ## 2. Build the firmware
 
 From `kit/`, as root:
@@ -69,15 +81,17 @@ From `kit/`, as root:
 python3 build_box2.py \
   --firmware /path/to/your/stock-scbox2-2.2.1.ius \
   --agent    /path/to/scbox2-agent \
-  --out      out/scbox2-firmware-v0.5.0.ius \
-  --img      out/scbox2-sd-v0.5.0.img \
-  --version  0.5.0
+  --sshd     /path/to/scbox2-sshd \
+  --out      out/scbox2-firmware-v0.5.1.ius \
+  --img      out/scbox2-sd-v0.5.1.img \
+  --version  0.5.1
 ```
 
 | Option | Meaning |
 |---|---|
 | `--firmware` | Your stock SC Box II `.ius` (required) |
 | `--agent` | The ARM panel binary from step 1 (required) |
+| `--sshd` | The SSH server binary from step 1 (required) |
 | `--out` | The update file for the panel (required). Publish it as `scbox2-firmware-vX.Y.Z.ius`: the panel looks for that name on GitHub and takes the version from it. |
 | `--img` | The SD-card image (the container placed at 16 MiB) |
 | `--version` | Written into `/etc/scbox2-release` on the miner |
@@ -90,8 +104,8 @@ Then compress the SD image and write the checksums:
 
 ```sh
 cd out
-xz -k scbox2-sd-v0.5.0.img
-sha256sum scbox2-firmware-v0.5.0.ius scbox2-sd-v0.5.0.img.xz > SHA256SUMS
+xz -k scbox2-sd-v0.5.1.img
+sha256sum scbox2-firmware-v0.5.1.ius scbox2-sd-v0.5.1.img.xz > SHA256SUMS
 ```
 
 `build_box2.py` also prints the `SHA256SUMS` line for the `.ius`.

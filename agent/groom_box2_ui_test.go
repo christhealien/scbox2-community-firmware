@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Box II grooming: on a planBox2V profile the panel speaks Goldshell's voltage level (in volts, via boxVoltsTxt),
+// Box II grooming: on a planBox2V profile the panel speaks the OEM's voltage level (in volts, via boxVoltsTxt),
 // never the SC Lite's PV / mV / 9.1–9.6 V supply; the SC Lite page renders exactly as before. These run the
 // page's own functions in node (l31Node), with the Controls GET reply each model sends.
 
@@ -85,7 +85,7 @@ await applyControl();console.log('SENT_ON '+JSON.stringify(SENT));console.log('C
 	}
 }
 
-// groomNoLevel: a Box II text never shows Goldshell's level: no "level" word and no bare 42–61 shown as a
+// groomNoLevel: a Box II text never shows the OEM's level: no "level" word and no bare 42–61 shown as a
 // voltage (option values and other attributes aside).
 func groomNoLevel(t *testing.T, what, html string) {
 	t.Helper()
@@ -319,7 +319,7 @@ for(let n=1;n<=20;n++)console.log('S'+n+'='+b2StepTxt(n));`)
 	}
 }
 
-// No Box II message the owner reads, as the helpers produce them, shows Goldshell's level.
+// No Box II message the owner reads, as the helpers produce them, shows the OEM's level.
 func TestGroomBox2MessagesSayVolts(t *testing.T) {
 	b10TempAuth(t)
 	p := profSCBox2

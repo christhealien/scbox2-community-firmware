@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the Goldshell SC Box II wifi daemon (stock fw 2.2.1 /usr/bin/wifi, md5 e65f44416dc88bc23aefaaf63333c05c)
+"""Keep SC Box II wifi daemon (stock fw 2.2.1 /usr/bin/wifi, md5 e65f44416dc88bc23aefaaf63333c05c)
 from routing its soft-AP clients onto the owner's LAN.
 
 usage: patch_wifi_box2.py <in> <out>

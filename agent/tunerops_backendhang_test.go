@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// ops sweep: Goldshell's web backend (minerd: /dbg/icinfo) stops answering in the middle of a test while the
+// ops sweep: the OEM's web backend (minerd: /dbg/icinfo) stops answering in the middle of a test while the
 // mining program (API: temperatures, hashrate) keeps going. watch() skips every failed chip read with
 // `continue` before it works out the elapsed time, so the test never reaches its hold time: the run sits on
 // "test 0.2/1min" for ever (seen through the HTTP API for 7 min with the mock's web down; the panel showed
@@ -22,7 +22,7 @@ func TestTunerWatchBackendDropMidTestEnds(t *testing.T) {
 		el := s.vc.Sub(s.t0)
 		s.mu.Unlock()
 		if el > 90*time.Second { // half way into the first test (the baseline is minute 0-1)
-			return nil, errors.New("the miner's backend (Goldshell's minerd) didn't answer")
+			return nil, errors.New("the miner's backend (the OEM's minerd) didn't answer")
 		}
 		return read()
 	}

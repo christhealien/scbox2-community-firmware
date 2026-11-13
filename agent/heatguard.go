@@ -1,6 +1,6 @@
 package main
 
-// Heat guard. Goldshell's fanctrl drives every fan to 100 % while a board sensor is over its cut-off
+// Heat guard. The OEM's fanctrl drives every fan to 100 % while a board sensor is over its cut-off
 // (product.json tempcutoff: 92 °C on the SC Lite, 86 °C on the SC Box II), and shuts the boards down if
 // it stays there. Every power-plan write sets all the fans to the plan's one level (intminer applies it),
 // so a plan written during that (a preset, the schedule, the throttle, a tuner step, the fan curve) would
@@ -17,7 +17,7 @@ import (
 // Thermal thresholds, seeded from the active model profile (model.go). At package-init time
 // model == profSCLite, so these carry the exact pre-port SC Lite figures (heat-guard 88, abort 88/90,
 // throttle 90, resume 80) and SC Lite behaviour is unchanged. main() calls setThermalFromModel after
-// loadModelFiles to apply the loaded profile. On the SC Box II every figure lands BELOW Goldshell's own
+// loadModelFiles to apply the loaded profile. On the SC Box II every figure lands BELOW the OEM's own
 // 86 °C cut-off (heat-guard 82, abort 82/84, throttle 82, resume 75), so the panel guards actually act
 // — unlike the old hard-coded 88/90, which were ABOVE the Box II cut-off and so were dead code there.
 var (

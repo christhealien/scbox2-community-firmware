@@ -21,7 +21,7 @@ reclaimed too.
 # NEVER_REMOVE guard).  libnl-* go because only hostapd/wpa_supplicant referenced them.
 WIFI_GROUP = [
     # daemons / tools
-    "/usr/bin/wifi",                # the Goldshell open-AP "wifi" daemon (inittab line removed by B8)
+    "/usr/bin/wifi",                # the OEM open-AP "wifi" daemon (inittab line removed by B8)
     "/usr/bin/ap_state",
     "/usr/bin/hostapd_cli",
     "/usr/sbin/hostapd",

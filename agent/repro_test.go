@@ -36,7 +36,7 @@ func TestLocksStopDuringBackendOutage(t *testing.T) {
 		if e.now().Sub(stopAt) >= 150*time.Second {
 			return apply(p) // the backend is back after 2.5 min
 		}
-		return fmt.Errorf("the miner's backend (Goldshell's minerd) didn't answer: test")
+		return fmt.Errorf("the miner's backend (the OEM's minerd) didn't answer: test")
 	}
 	if !runEngine(t, e, 20*time.Second) {
 		return

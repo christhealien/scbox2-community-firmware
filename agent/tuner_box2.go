@@ -12,34 +12,34 @@ package main
 //     12.5 MHz x N from 500 MHz up, rounding a request down (the "ICT580 set Clock(req …, actual …)" lines of
 //     the owner's log; 690 runs 687.5): the same grid pll() already models. The default map walks the whole
 //     window in the chips' own 12.5 MHz steps, from the Low-power stock clock up to the Hashrate one.
-//   - Voltage axis: Goldshell's voltage LEVEL, 42–61, carried in the plan's "V" field (powerplan.VrunMv); a
+//   - Voltage axis: the OEM's voltage LEVEL, 42–61, carried in the plan's "V" field (powerplan.VrunMv); a
 //     higher level is a LOWER voltage (C4, rail at the power lugs under load: 42 = 7.67 V … 61 = 7.03 V, about
 //     33.5 mV per level). There is no PV and no millivolt control: the tuner never searches, writes or shows
 //     millivolts or PV here. (The plan's 4th field is the second voltage-trim PWM, not a fan: the plan writer
 //     always keeps the stock plan's value there.) Which way a higher level moves the voltage is model.VCodeDir;
 //     while the profile has it unknown the tuner tunes the CLOCK ONLY, at the stock Hashrate level, and no
 //     other level is ever written. Once set, it steps levels inside [VCodeMin, VCodeMax] (42–61).
-//   - Only Goldshell's two stock plans (690 MHz / level 42, 525 MHz / level 61) are known to be safe; every
+//   - Only the OEM's two stock plans (690 MHz / level 42, 525 MHz / level 61) are known to be safe; every
 //     other (clock, level) pair is unproven, which is what the judge and the confirm are for.
 //   - No power: the Box II has no power sensor and the power estimate (C2) is off, so the tuner never ranks or
 //     labels anything by watts or J/TH. It ranks by clock (hashrate), the hardware-error judge and the voltage
 //     level (less voltage first).
 //   - Thermal: abort, target and cut-off come from the profile (abort default 82, at most 84; fan target 77;
-//     Goldshell's 86 °C cut-off is never touched). The Box II's fan behaviour isn't characterised (the fan
-//     hold's controller was tuned on an SC Lite), so the run leaves the fans to Goldshell's own control by
+//     the OEM's 86 °C cut-off is never touched). The Box II's fan behaviour isn't characterised (the fan
+//     hold's controller was tuned on an SC Lite), so the run leaves the fans to the OEM's own control by
 //     default; the owner may still turn the hold on.
 //   - The end: the confirmed best (a setting that passed its long test), else what the miner ran before if
-//     that was one of its stock plans (Goldshell's own setting object, PUT back verbatim), else the stock
+//     that was one of its stock plans (the OEM's own setting object, PUT back verbatim), else the stock
 //     Hashrate plan. Never an unverified setting.
 //
 // The engine searches voltages as "a higher number = more voltage". On the Box II the engine therefore works
-// in its own voltage RANKS (called levels in the code below), a mirror of Goldshell's level when a higher level
+// in its own voltage RANKS (called levels in the code below), a mirror of the OEM's level when a higher level
 // means less voltage (identity otherwise, and always while the direction is unknown). Ranks never leave the
 // engine: every write, read-back, restart record put-back and the views convert with planMV.hw() /
-// box2CodeOf, so the owner only ever sees Goldshell's level.
+// box2CodeOf, so the owner only ever sees the OEM's level.
 //
 // Writes: the tuner never touches the hardware itself. Every setting goes through applyTunePlanGen →
-// mutatePlanGen → mutatePlanBox2 (minerd PUT /mcb/setting, as Goldshell's web UI does); the fan hold (when the
+// mutatePlanGen → mutatePlanBox2 (minerd PUT /mcb/setting, as the OEM's web UI does); the fan hold (when the
 // owner turns it on) through applyTuneFan → mutatePlanNoWake (the fan duty; the 4th field stays the stock
 // trim value). The non-stock clock / level write path inside mutatePlanBox2 belongs to the
 // ClockControl/VoltageControl lane (C3/C4).
@@ -76,7 +76,7 @@ func box2Volts(level int) (v float64, measured bool) {
 	return 7.66 - float64(0.0335*float64(level-42)), false
 }
 
-// box2LevelText: one Goldshell voltage level as the owner reads it, in volts only: "7.67 V", or "≈ 7.39 V" for a
+// box2LevelText: one OEM voltage level as the owner reads it, in volts only: "7.67 V", or "≈ 7.39 V" for a
 // level whose volts are estimated (the page's boxVoltsTxt gives the same text). The level itself never shows.
 func box2LevelText(level int) string {
 	v, ok := box2Volts(level)
@@ -127,7 +127,7 @@ func box2HashrateTuple() box2Tuple {
 	return hi
 }
 
-// box2LevelOf / box2CodeOf: Goldshell's level ("code") <-> the engine's voltage rank (an involution: the same
+// box2LevelOf / box2CodeOf: the OEM's level ("code") <-> the engine's voltage rank (an involution: the same
 // formula both ways).
 func box2LevelOf(code int) int {
 	if model.VCodeDir == vcodeUpIsLess {
@@ -138,7 +138,7 @@ func box2LevelOf(code int) int {
 
 func box2CodeOf(level int) int { return box2LevelOf(level) }
 
-// hw: the plan as the miner is given it. SC Lite: unchanged. Box II: Goldshell's level, no PV.
+// hw: the plan as the miner is given it. SC Lite: unchanged. Box II: the OEM's level, no PV.
 func (p planMV) hw() planMV {
 	if !tunerOnBox2() {
 		return p
@@ -173,7 +173,7 @@ func (c tunerConfig) vText(mv int) string {
 	return fmt.Sprintf("PV %d", c.pvFor(mv))
 }
 
-// box2TunerDefaults: the Box II starting form. Goldshell's levels, not the engine's ranks (the engine converts
+// box2TunerDefaults: the Box II starting form. The OEM's levels, not the engine's ranks (the engine converts
 // at its start). Clock axis: the whole window (Low-power stock clock up to the Hashrate one) in the chips' own
 // clock steps; voltage axis: every allowed level once the profile knows the level's direction. Nothing here is
 // an SC Lite figure; the test lengths, sensitivity and judge settings stay the generic defaults (no Box II
@@ -190,7 +190,7 @@ func box2TunerDefaults(c *tunerConfig) {
 	c.PVGap = 0
 	c.AbortC = model.AbortDefC
 	// the fan hold's controller (and its 30 % floor) was tuned on an SC Lite; the Box II's fans aren't
-	// characterised, so by default the run leaves them to Goldshell's own temperature control
+	// characterised, so by default the run leaves them to the OEM's own temperature control
 	c.FanHold = false
 	c.FanTargetC = model.TargetC
 	c.WarmestC = model.TargetC
@@ -215,7 +215,7 @@ func box2TunerNormalize(c tunerConfig) (tunerConfig, string) {
 	return c, note
 }
 
-// validateTunerConfigBox2: validateTunerConfig for planBox2V. The config is in Goldshell's LEVELS here.
+// validateTunerConfigBox2: validateTunerConfig for planBox2V. The config is in the OEM's LEVELS here.
 func validateTunerConfigBox2(c tunerConfig) error {
 	switch c.Mode {
 	case "map", "confirm":
@@ -330,7 +330,7 @@ func box2TunerLevels(c tunerConfig) tunerConfig {
 	return c
 }
 
-// hwView: the config as the owner gave it (Goldshell's levels), for the views. SC Lite: unchanged.
+// hwView: the config as the owner gave it (the OEM's levels), for the views. SC Lite: unchanged.
 func (c tunerConfig) hwView() tunerConfig {
 	if !tunerOnBox2() {
 		return c
@@ -344,7 +344,7 @@ func (c tunerConfig) hwView() tunerConfig {
 	return c
 }
 
-// box2TunerWriteErr: the last check before a tuner setting goes to the miner (Goldshell's levels): a clock
+// box2TunerWriteErr: the last check before a tuner setting goes to the miner (the OEM's levels): a clock
 // inside the window, a level inside the allowed interval, and only the stock level while the direction is
 // unknown.
 func box2TunerWriteErr(h planMV) error {
@@ -360,7 +360,7 @@ func box2TunerWriteErr(h planMV) error {
 	return nil
 }
 
-// box2TunerApply: the Box II engine's applyPlan: rank -> Goldshell's level, checked, then the panel's one plan
+// box2TunerApply: the Box II engine's applyPlan: rank -> the OEM's level, checked, then the panel's one plan
 // writer.
 func box2TunerApply(gen int64, p planMV) error {
 	h := p.hw()
@@ -378,7 +378,7 @@ func box2TunerBaseline() planMV {
 }
 
 // box2TunerBefore: what the miner runs before the run, and how to put it back at the end. Only one of its
-// stock plans is put back (Goldshell's own setting object, verbatim, the way its web UI writes it, then the
+// stock plans is put back (the OEM's own setting object, verbatim, the way its web UI writes it, then the
 // fans raised if it's hot or they sit under the floor); anything else (a clock the owner set through clock
 // control, an unreadable setting) gives no restorer, so the run ends on the stock Hashrate baseline instead.
 func box2TunerBefore() (func() error, string) {
@@ -444,7 +444,7 @@ func tunerGeometryErr(gained map[ckey]int) error {
 }
 
 // box2TunerInfo: what the Tuner tab shows on this model (GET /api/tuner "box2"). (The "vcode_*" / "stock_code"
-// keys are the page's names for Goldshell's voltage level.)
+// keys are the page's names for the OEM's voltage level.)
 func box2TunerInfo() map[string]any {
 	hi, lo := box2HashrateTuple(), box2LowPowerTuple()
 	dir := "unknown"

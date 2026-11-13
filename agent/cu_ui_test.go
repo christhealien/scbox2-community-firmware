@@ -66,7 +66,7 @@ func TestCUCommissionCardInPage(t *testing.T) {
 	// no product literal in the card (the model's name comes from /api/model at runtime)
 	i := strings.Index(page, `id="companel"`)
 	card := page[i : i+strings.Index(page[i:], `id="combody"`)]
-	for _, s := range []string{"SC Box", "SC Lite", "Goldshell"} {
+	for _, s := range []string{"SC Box", "SC Lite", "OEM"} {
 		if strings.Contains(card, s) {
 			t.Errorf("card markup carries %q", s)
 		}

@@ -159,7 +159,7 @@ func TestL05FormerHostnameAfterRename(t *testing.T) {
 	}
 }
 
-// Goldshell's backend (ulfius) has a request log "%s: verb(%s) url(%s)"; the panel signs in to it with
+// The OEM's backend (ulfius) has a request log "%s: verb(%s) url(%s)"; the panel signs in to it with
 // GET /user/login?username=admin&password=<AES, fixed public key>&cipher=true. A password (or token) in a
 // URL's query must not survive the export in any log.
 func TestL05PasswordInURLQuery(t *testing.T) {

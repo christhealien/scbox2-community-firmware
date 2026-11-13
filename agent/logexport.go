@@ -35,7 +35,7 @@ var (
 	reIPv6     = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:%[\w.-]+)?`)
 	reSSHLogin = regexp.MustCompile(`(SSH sign-in: ).*?( from )`)                // the panel's login name (ssh.go)
 	reIPPart   = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}(?:\.\d{1,3})? \d{2,5}:`) // a cut-off address + port ("68.8.235 23334")
-	// a pool password, whatever its length and whether or not the backend answers: Goldshell's backend logs each
+	// a pool password, whatever its length and whether or not the backend answers: the OEM's backend logs each
 	// pool as JSON ("pass": "..."), the miner's protocol dump (verbose) logs mining.authorize ["user", "pass"]
 	rePassJSON  = regexp.MustCompile(`(?i)("pass(?:word)?"\s*:\s*")(?:[^"\\]|\\.)*"`)
 	reAuthorize = regexp.MustCompile(`(mining\.authorize"\s*,\s*"params"\s*:\s*\[\s*"(?:[^"\\]|\\.)*"\s*,\s*")(?:[^"\\]|\\.)*"`)
@@ -240,7 +240,7 @@ func minerLogText() (string, error) {
 			b.WriteString(strings.TrimRight(l, " ") + "\n")
 		}
 	}
-	return b.String(), nil
+	return stockTextShown(b.String()), nil
 }
 
 // systemLogText: the system log, the older file first when it has been rotated (I2C probe noise left out,
@@ -264,7 +264,7 @@ func systemLogText() (string, error) {
 	if !found {
 		return "", os.ErrNotExist
 	}
-	return b.String(), nil
+	return stockTextShown(b.String()), nil
 }
 
 func logHeader(what string, private bool) string {
@@ -314,11 +314,11 @@ func handleLogExport(w http.ResponseWriter, r *http.Request) {
 		add("processes.txt", processesText(time.Now()))
 		add("panel-events.txt", logHeader("panel events (the activity feed, kept on the miner)", true)+redactLog(eventsText(), toks))
 		for _, in := range incidentTexts() {
-			add(in[0], logHeader(in[0]+": the logs as they were at the incident", true)+redactBarcodes(redactLog(in[1], toks)))
+			add(in[0], logHeader(in[0]+": the logs as they were at the incident", true)+stockTextShown(redactBarcodes(redactLog(in[1], toks))))
 		}
-		for _, gl := range goldshellLogs() {
+		for _, gl := range oemLogs() {
 			if t, err := tailFile(gl[1], 400<<10); err == nil {
-				add(gl[0], logHeader(gl[0], true)+redactBarcodes(redactLog(t, toks)))
+				add(gl[0], logHeader(gl[0], true)+stockTextShown(redactBarcodes(redactLog(t, toks))))
 			} else {
 				add(gl[0], "(unavailable: "+err.Error()+")\n")
 			}
@@ -335,7 +335,7 @@ func handleLogExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// redactBarcodes: the serial numbers Goldshell's backend logs at every start (box, control board, boards).
+// redactBarcodes: the serial numbers the OEM's backend logs at every start (box, control board, boards).
 func redactBarcodes(s string) string {
 	return reBarcode.ReplaceAllString(s, "${1}[serial]")
 }

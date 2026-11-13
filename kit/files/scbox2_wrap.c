@@ -1,11 +1,11 @@
 /*
  * scbox2 shim -- the SC Box II miner wrapper, installed as /usr/bin/intminer and /usr/bin/bfgminer.
  *
- * The stock miner (Goldshell's intminer: BFGMiner 5.4.2 + the gsscbox2 driver) lives at
+ * The stock miner (the OEM's intminer: BFGMiner 5.4.2 + the gsscbox2 driver) lives at
  * /usr/libexec/scbox2/intminer (same file name, so the running process is still called "intminer"). The
  * config store is the 3 MB FAT at /mnt/config (the root is a read-only squashfs). This wrapper:
  *   - runs at most ONE miner: two launchers start it on this firmware (the boot launcher
- *     /usr/libexec/scbox2/miner-run, and Goldshell's xminerd once its network check passes, ~40 s after boot).
+ *     /usr/libexec/scbox2/miner-run, and the OEM's xminerd once its network check passes, ~40 s after boot).
  *     Two miners on the same chip chain fight over it (seen on hardware: "Read Nonce Faild 10 Times, Reinit
  *     Device", "Auto addressing failed", dropped nonces, HW errors up to 100 %). So the wrapper first takes an
  *     exclusive flock on /tmp/scbox2-miner.lock and keeps that descriptor open across execve: the miner holds
@@ -25,7 +25,7 @@
  *   - while /mnt/config/scbox2/chiphook exists (Controls -> Chip trims; OFF by default on the SC Box II), runs
  *     the chip-hook copy (/usr/libexec/scbox2/hook/intminer, same file name) with /lib/scbox2_chip.so as well,
  *     which applies per-chip clock trims. Without the flag the same copy runs without the trim library: it's
- *     Goldshell's miner plus the guards (patch_intminer_box2: divide-by-zero + pool-input guards).
+ *     the OEM's miner plus the guards (patch_intminer_box2: divide-by-zero + pool-input guards).
  *     Either way at most 3 starts in a row (markers in /tmp, cleared once mining runs); then, or if the copy
  *     is missing, the stock miner runs.
  * Static, no libc: raw ARM EABI syscalls only.
@@ -164,7 +164,7 @@ __attribute__((used, noreturn)) void wrap_main(long *sp)
 	       sc3(NR_access, (long)HOOK_LIB, F_OK, 0) == 0;
 	if (hook)
 		hook = take_try(TRY1, TRY2, TRY3); /* 3 starts in a row never got going: no trims */
-	/* without trims the same copy runs without the trim library: Goldshell's miner plus the guards */
+	/* without trims the same copy runs without the trim library: the OEM's miner plus the guards */
 	guard = !hook && sc3(NR_access, (long)REAL_HOOK, F_OK, 0) == 0 && take_try(GTRY1, GTRY2, GTRY3);
 	for (i = 0; envp[i] && m < MAXE; i++)
 		if (!starts(envp[i], "LD_PRELOAD="))

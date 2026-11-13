@@ -15,15 +15,16 @@ import (
 	"testing"
 )
 
-// The SC Box II firmware never names the miner's manufacturer in anything its user reads: the panel says "OEM"
-// ("the OEM firmware", "the OEM watchdog", "OEM spec"). The SC Lite keeps "Goldshell", byte-identical. Go side:
-// oemName / oemOf / oemPoss (brand.go); page side: OEM() / oemOf() / oemPoss() / oemFw() (from /api/model's
-// "oem" or the Box II plan, and the scbox2 build's default before the model loads).
+// The firmware never names the miner's manufacturer in anything its user reads, on any model or build: the
+// panel says "OEM" ("the OEM firmware", "the OEM watchdog", "OEM spec"). Go side: oemName / oemOf / oemPoss
+// (brand.go); page side: OEM() / oemOf() / oemPoss() / oemFw() (from /api/model's "oem", "OEM" before the
+// model loads).
 
+// oemWord: the manufacturer's name, which these tests look for (the one place a test spells it out).
 var oemWord = regexp.MustCompile(`(?i)goldshell`)
 
 // oemJSFuncs: the page's OEM helpers, put into the node harnesses' preludes (l31Node, l34Node) like MODEL().
-var oemJSFuncs = []string{"OEM", "oemLite", "oemOf", "OemOf", "oemPoss", "OemPoss", "oemFw", "OemFw"}
+var oemJSFuncs = []string{"OEM", "oemOf", "OemOf", "oemPoss", "OemPoss", "oemFw", "OemFw"}
 
 func oemJS(t *testing.T) string {
 	t.Helper()
@@ -37,8 +38,8 @@ func oemJS(t *testing.T) string {
 
 // ---- Go: the messages the Box II user reads ----
 
-// oemGoMessages: user-facing texts from the Go side that name the manufacturer on the SC Lite, as the active
-// model gives them (errors, notes, activity/log lines, the log export's file names and headers).
+// oemGoMessages: user-facing texts from the Go side that speak of the manufacturer, as the active model gives
+// them (errors, notes, activity/log lines, the log export's file names and headers).
 func oemGoMessages(t *testing.T) map[string]string {
 	t.Helper()
 	m := map[string]string{
@@ -69,7 +70,7 @@ func oemGoMessages(t *testing.T) map[string]string {
 	if err := validateTunerConfig(tc); err != nil {
 		m["tunerAbort"] = err.Error()
 	}
-	for i, gl := range goldshellLogs() {
+	for i, gl := range oemLogs() {
 		m["logFile"+strconv.Itoa(i)] = gl[0]
 		m["logHeader"+strconv.Itoa(i)] = logHeader(gl[0], true)
 	}
@@ -124,40 +125,41 @@ func oemModelReply(t *testing.T) string {
 	return rec.Body.String()
 }
 
-// The SC Lite build keeps "Goldshell" in the same messages, word for word (the before/after outputs of every
-// function above were compared byte for byte when the helpers came in).
-func TestOEMSCLiteMessagesUnchanged(t *testing.T) {
-	if brandOEM != "Goldshell" {
-		t.Skip("the SC Lite build only")
-	}
+// The SC Lite model never names the manufacturer either: the same messages, in its wording.
+func TestOEMSCLiteMessages(t *testing.T) {
+	old := model
+	model = profSCLite
+	setWindowsFromModel()
+	t.Cleanup(func() { model = old; setWindowsFromModel() })
 	msgs := oemGoMessages(t)
-	for k, want := range map[string]string{
-		"backendErr": "the miner's backend (Goldshell's minerd) didn't answer: ",
-		"watchdog0":  "Goldshell's watchdog stops mining while a fan looks failed, and flags fan 2. It stopped the mining program 2 times in the last 10 minutes.",
-		"curveAbort": "safety temperature must be 70–90 °C (Goldshell's own over-temperature control takes over at 92 °C)",
-		"fanAbort":   "abort temperature must be 70–90 °C (Goldshell's own over-temperature control takes over at 92 °C)",
-		"logFile0":   "goldshell-watchdog-xminerd.txt", "logFile1": "goldshell-fans-fanctrl.txt", "logFile2": "goldshell-backend-minerd.txt",
-		"settingsNotes": "Pools are stored in Goldshell's own miner config, not the panel",
-		"oemFanCtl":     "Goldshell", "oemOwnCurly": "Goldshell’s",
-	} {
-		if !strings.HasPrefix(msgs[k], want) {
-			t.Errorf("SC Lite %s changed:\n got %q\nwant %q…", k, msgs[k], want)
+	for k, v := range msgs {
+		if oemWord.MatchString(v) {
+			t.Errorf("SC Lite %s names the manufacturer: %q", k, v)
 		}
 	}
-	if strings.Contains(oemModelReply(t), `"oem"`) {
-		t.Errorf("the SC Lite's /api/model reply changed: %s", oemModelReply(t))
+	for k, want := range map[string]string{
+		"backendErr": "the miner's backend (the OEM's minerd) didn't answer: ",
+		"watchdog0":  "The OEM watchdog stops mining while a fan looks failed, and flags fan 2. It stopped the mining program 2 times in the last 10 minutes.",
+		"curveAbort": "safety temperature must be 70–90 °C (the OEM's own over-temperature control takes over at 92 °C)",
+		"fanAbort":   "abort temperature must be 70–90 °C (the OEM's own over-temperature control takes over at 92 °C)",
+		"logFile0":   "oem-watchdog-xminerd.txt", "logFile1": "oem-fans-fanctrl.txt", "logFile2": "oem-backend-minerd.txt",
+		"logHeader0":    "# SC Lite — oem-watchdog-xminerd.txt\n",
+		"settingsNotes": "Pools are stored in the OEM's own miner config, not the panel",
+		"oemFanCtl":     "the OEM fan control", "oemOwnCurly": "the OEM’s",
+	} {
+		if !strings.HasPrefix(msgs[k], want) {
+			t.Errorf("SC Lite %s:\n got %q\nwant %q…", k, msgs[k], want)
+		}
+	}
+	if !strings.Contains(oemModelReply(t), `"oem":"OEM"`) {
+		t.Errorf("/api/model on the SC Lite carries no oem field: %s", oemModelReply(t))
 	}
 }
 
-// Every Go string literal that still names the manufacturer is one the Box II user never reads: the SC Lite's
-// side of a helper, the stock product.json model names (matched, not shown), the agent's command-line help.
+// The only Go string literals that name the manufacturer are the stock product.json model strings, which the
+// panel matches and never shows (stockModelLabel gives their neutral form).
 func TestOEMGoLiteralsAllowed(t *testing.T) {
-	allowed := map[string]bool{
-		"Goldshell": true, "Goldshell's": true, "Goldshell SC Lite": true, "Goldshell-SCLITE": true, "Goldshell-SCBoxⅡ": true,
-		"where Goldshell's own programs keep their logs": true, "Goldshell's product file (fans' max RPM)": true,
-		"Goldshell's control-board version file (model profile match)": true,
-		"?'OEM':'Goldshell');}": true, // the page's OEM() default, set per build
-	}
+	allowed := map[string]bool{stockModelSCLite: true, stockModelSCBox2: true}
 	files, _ := filepath.Glob("*.go")
 	fs := token.NewFileSet()
 	var bad []string
@@ -165,9 +167,14 @@ func TestOEMGoLiteralsAllowed(t *testing.T) {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
-		af, err := parser.ParseFile(fs, f, nil, 0)
+		af, err := parser.ParseFile(fs, f, nil, parser.ParseComments)
 		if err != nil {
 			t.Fatal(err)
+		}
+		for _, cg := range af.Comments {
+			if oemWord.MatchString(cg.Text()) {
+				bad = append(bad, fs.Position(cg.Pos()).String()+": a comment")
+			}
 		}
 		ast.Inspect(af, func(n ast.Node) bool {
 			bl, ok := n.(*ast.BasicLit)
@@ -175,8 +182,11 @@ func TestOEMGoLiteralsAllowed(t *testing.T) {
 				return true
 			}
 			s, err := strconv.Unquote(bl.Value)
-			if err != nil || !oemWord.MatchString(s) || allowed[s] || len(s) > 100000 { // (the page: TestPublicOEMPageSource)
+			if err != nil || !oemWord.MatchString(s) || allowed[s] {
 				return true
+			}
+			if len(s) > 2000 {
+				s = s[:2000] + "…"
 			}
 			bad = append(bad, fs.Position(bl.Pos()).String()+": "+s)
 			return true
@@ -184,7 +194,20 @@ func TestOEMGoLiteralsAllowed(t *testing.T) {
 	}
 	sort.Strings(bad)
 	for _, b := range bad {
-		t.Errorf("a string that names the manufacturer on every model (use oemName/oemOf/oemPoss): %s", b)
+		t.Errorf("names the manufacturer (use oemName/oemOf/oemPoss, or say OEM): %s", b)
+	}
+	for raw, want := range map[string]string{stockModelSCLite: "SC Lite", stockModelSCBox2: "SC Box II",
+		stockVendorPrefix + "KDBOX": "KDBOX", "Other-X": "Other-X"} {
+		if got := stockModelLabel(raw); got != want || oemWord.MatchString(got) {
+			t.Errorf("stockModelLabel(%q) = %q, want %q", raw, got, want)
+		}
+	} // a stock program's log line as the panel streams or exports it
+	line := "[2026-11-09 16:59:22] " + stockVendorPrefix + "sb2  Miner detected, 1 chains totally!"
+	if got := stockTextShown(line); got != "[2026-11-09 16:59:22] OEM-sb2  Miner detected, 1 chains totally!" {
+		t.Errorf("stockTextShown: %q", got)
+	}
+	if got := stockTextShown(strings.ToUpper(line)); oemWord.MatchString(got) {
+		t.Errorf("stockTextShown (upper case): %q", got)
 	}
 }
 
@@ -264,7 +287,7 @@ func oemViews(t *testing.T, mdl string) map[string]string {
 	return views
 }
 
-// Every Box II view, in the owner's build and the public release: no "Goldshell" anywhere a user reads (text,
+// Every Box II view, in the owner's build and the public release: the manufacturer named nowhere a user reads (text,
 // tooltips, confirm dialogs).
 func TestPublicOEMBox2Views(t *testing.T) {
 	for _, mdl := range []string{pubModelOwner, pubModelPublic} {
@@ -291,12 +314,17 @@ func TestPublicOEMBox2Views(t *testing.T) {
 	}
 }
 
-// The SC Lite renders of the same functions keep "Goldshell".
-func TestPublicOEMSCLiteViewsKeepName(t *testing.T) {
+// The SC Lite renders of the same functions: the same neutral wording, no name.
+func TestPublicOEMSCLiteViews(t *testing.T) {
 	views := oemViews(t, "")
-	for k, want := range map[string]string{"overtemp": "⚠ <b>Goldshell shut the hash boards down", "fancheck": "Re-run Goldshell’s fan test</button>",
-		"curve": "(Goldshell takes over at 92 °C)", "disclaimer": "supported by Goldshell or any miner manufacturer.", "fanpair": "the tuner and Goldshell’s own fan control",
-		"presetsLite": "<div class=\"meta\">Goldshell’s factory setting for this miner, read from its firmware."} {
+	for k, v := range views {
+		if oemWord.MatchString(v) {
+			t.Errorf("SC Lite %s names the manufacturer: %s", k, v)
+		}
+	}
+	for k, want := range map[string]string{"overtemp": "⚠ <b>The OEM firmware shut the hash boards down", "fancheck": "Re-run the OEM fan test</button>",
+		"curve": "(the OEM firmware takes over at 92 °C)", "disclaimer": "supported by the OEM (the miner’s manufacturer) or any miner manufacturer.",
+		"fanpair": "the tuner and the OEM’s own fan control", "presetsLite": "<div class=\"meta\">The OEM’s factory setting for this miner, read from its firmware."} {
 		if !strings.Contains(views[k], want) {
 			t.Errorf("SC Lite %s: want %q in %s", k, want, views[k])
 		}
@@ -324,34 +352,26 @@ func TestPublicOEMStaticPage(t *testing.T) {
 			t.Errorf("the Box II page's fixed HTML names the manufacturer: %s", l)
 		}
 	}
-	// the SC Lite page shows its own text unchanged
+	// the SC Lite page shows the same wording
 	lite := regexp.MustCompile(`<span data-box2="[^"]*">([^<]*)</span>`).ReplaceAllString(indexHTML, "$1")
-	for _, s := range []string{"<p class=\"muted sc-intro\">Goldshell’s watchdog checks every fan", "<b>Restart mining</b> asks Goldshell’s backend to restart"} {
+	for _, s := range []string{"<p class=\"muted sc-intro\">The OEM watchdog checks every fan", "<b>Restart mining</b> asks the OEM backend to restart"} {
 		if !strings.Contains(lite, s) {
-			t.Errorf("SC Lite static text changed: %q", s)
+			t.Errorf("SC Lite static text: %q missing", s)
 		}
 	}
-	// the page's default before the model loads: the build's own
-	if want := "?'OEM':'" + brandOEM + "');}"; !strings.Contains(indexPage, want) {
+	// the page's default before the model loads
+	if want := "return (m&&m.oem)||'OEM';}"; !strings.Contains(indexPage, want) {
 		t.Errorf("the served page's OEM() default is not %q", want)
 	}
 }
 
-// Every "Goldshell" left in the page's script is the SC Lite's side of a helper or of an SC-Lite-only view:
-// a new text that names it on every model fails here.
+// The page's source names the manufacturer nowhere: no text, no comment, on any model.
 func TestPublicOEMPageSource(t *testing.T) {
-	s := indexHTML[strings.Index(indexHTML, "<script>"):]
-	for _, f := range append([]string{"renderRecovery"}, oemJSFuncs...) { // renderRecovery: the SC Lite's (the Box II's is renderRecoveryBox2)
-		s = strings.Replace(s, l31Func(t, f), "", 1)
-	}
-	s = regexp.MustCompile(`oemLite\(\)\?'Goldshell(’s)?'`).ReplaceAllString(s, "")
-	for _, l := range strings.Split(s, "\n") {
-		code := l
-		if k := strings.Index(code, "//"); k >= 0 && (k == 0 || strings.TrimSpace(code[:k]) == "" || strings.ContainsAny(code[k-1:k], " ;{}")) {
-			code = code[:k] // a comment
-		}
-		if oemWord.MatchString(code) {
-			t.Errorf("the page names the manufacturer on every model: %s", strings.TrimSpace(code))
+	for _, page := range []string{indexHTML, indexPage} {
+		for _, l := range strings.Split(page, "\n") {
+			if oemWord.MatchString(l) {
+				t.Errorf("the page names the manufacturer: %s", strings.TrimSpace(l))
+			}
 		}
 	}
 }

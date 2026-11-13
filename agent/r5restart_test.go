@@ -134,7 +134,7 @@ func TestR5FanUnlockForgottenOnRestart(t *testing.T) {
 // 4. The fan lock is written before the Idle (on purpose: a stopping tuning run must see it). A panel killed
 // between the two leaves a lock that says Idle:false, and fanLockTick returns early on any lock: the miner
 // keeps hashing (the watchdog stopping it again and again) under a lock that never puts it on Idle. The same
-// happens when the Idle request failed once (Goldshell's backend busy): it's never tried again.
+// happens when the Idle request failed once (the OEM's backend busy): it's never tried again.
 func TestR5FanLockWithoutIdleNeverRetried(t *testing.T) {
 	_, idled := r4LockEnv(t)
 	st := fanLockState{At: time.Now().Unix(), Flagged: "the watchdog flags fan 0 (0 RPM)", Status: 1}

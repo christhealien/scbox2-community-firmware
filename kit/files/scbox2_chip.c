@@ -38,7 +38,7 @@
  * MHz (6250 = 625.0 MHz): this firmware's uClibc mis-reads doubles passed by clang-built code to printf, so
  * nothing here formats a floating-point number.
  *
- * The addresses below belong to intminer from Goldshell SC Box II firmware 2.2.1 (non-PIE, fixed
+ * The addresses below belong to intminer from SC Box II firmware 2.2.1 (non-PIE, fixed
  * addresses); the kit's patch_intminer_box2.py checks the bytes it patches. No trims -> nothing is set, the
  * miner behaves like stock.
  */

@@ -29,46 +29,23 @@ func brandEnv(name string) string { return strings.ToUpper(brand) + "_" + name }
 // format name; their contents are the same, so they're accepted.
 const legacySettingsFormat = "sclite-settings"
 
-// oemName: the miner's manufacturer in text people read. The SC Box II firmware never names it ("OEM": "the
-// OEM firmware", "OEM spec"); the SC Lite keeps "Goldshell", byte-identical to its text before this helper.
-// On the Box II model (also in an untagged test build) or on the scbox2 build it is "OEM".
-func oemName() string {
-	if model.Plan == planBox2V {
-		return "OEM"
-	}
-	return brandOEM
-}
+// oemName: the miner's manufacturer in text people read. The firmware never names it, on any model or build:
+// "OEM" ("the OEM firmware", "OEM spec").
+func oemName() string { return brandOEM }
 
-// The manufacturer as the owner of something, mid-sentence and at a sentence start. The SC Lite's text says
-// "Goldshell's" in every form. On the SC Box II, oemOf is attributive ("the OEM watchdog", "the OEM firmware")
-// and oemPoss possessive ("the OEM's own fan control", "the OEM's 86 °C cut-off").
-func oemOf() string   { return oemForm("the OEM") }
-func OemOf() string   { return oemForm("The OEM") }
-func oemPoss() string { return oemForm("the OEM's") }
-func OemPoss() string { return oemForm("The OEM's") }
-
-func oemForm(box2 string) string {
-	if oemIsLite() {
-		return "Goldshell's"
-	}
-	return strings.Replace(box2, "OEM", oemName(), 1)
-}
-
-// oemIsLite: true when the manufacturer is named (the SC Lite's text); a sentence that is reworded rather than
-// word-swapped on the SC Box II branches on it.
-func oemIsLite() bool { return oemName() == "Goldshell" }
+// The manufacturer as the owner of something, mid-sentence and at a sentence start: oemOf is attributive
+// ("the OEM watchdog", "the OEM firmware") and oemPoss possessive ("the OEM's own fan control", "the OEM's
+// 86 °C cut-off").
+func oemOf() string   { return "the " + oemName() }
+func OemOf() string   { return "The " + oemName() }
+func oemPoss() string { return "the " + oemName() + "'s" }
+func OemPoss() string { return "The " + oemName() + "'s" }
 
 // oemOwnCurly: oemPoss with the typographic apostrophe (’), for text written with it.
 func oemOwnCurly() string { return strings.Replace(oemPoss(), "'", "’", 1) }
 
-// oemFanCtl: who drives the fans when the panel leaves them ("Goldshell" on the SC Lite, "the OEM fan control").
-func oemFanCtl() string {
-	if oemIsLite() {
-		return "Goldshell"
-	}
-	return "the OEM fan control"
-}
+// oemFanCtl: who drives the fans when the panel leaves them.
+func oemFanCtl() string { return "the " + oemName() + " fan control" }
 
-// oemFile: the name of one of the manufacturer's own logs in a log export ("goldshell-…" on the SC Lite,
-// "oem-…" on the SC Box II).
+// oemFile: the name of one of the manufacturer's own logs in a log export ("oem-…").
 func oemFile(name string) string { return strings.ToLower(oemName()) + "-" + name }

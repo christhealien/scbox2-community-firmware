@@ -44,7 +44,7 @@ func TestFanPairTickWritesPairB(t *testing.T) {
 			t.Errorf("fan%d=%d want %d", i, v, want)
 		}
 	}
-	// Goldshell's fanctrl steps every fan from its own level: the offset survives, nothing rewritten
+	// The OEM's fanctrl steps every fan from its own level: the offset survives, nothing rewritten
 	setFanLvl("fan0", 41)
 	setFanLvl("fan1", 41)
 	setFanLvl("fan2", 53)
@@ -64,7 +64,7 @@ func TestFanPairTickWritesPairB(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		setFanLvl(fmt.Sprintf("fan%d", i), 20)
 	}
-	fanPairTick(10, "left to Goldshell while the miner is on Idle")
+	fanPairTick(10, "left to the OEM fan control while the miner is on Idle")
 	if v, _ := fanLvl("fan2"); v != 20 {
 		t.Errorf("fan2 changed while skipped: %d", v)
 	}

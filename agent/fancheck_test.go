@@ -20,7 +20,7 @@ func TestFitMaxRPM(t *testing.T) {
 			t.Fatalf("%d %%: %d RPM under the fitted limit %d", i*10, slow[i], fanLimitAt(1250, i*10))
 		}
 	}
-	// a stock-like fan: never above Goldshell's 2200
+	// a stock-like fan: never above the OEM's 2200
 	if f := fitMaxRPM([]int{-1, 300, 420, 660, 900, 1080, 1320, 1560, 1740, 1920, 2040}); f != 2125 {
 		t.Fatalf("stock-like fit %d", f)
 	}
@@ -72,7 +72,7 @@ func TestFanCheckFitWritesOverlay(t *testing.T) {
 		t.Fatalf("overlay %s", b)
 	}
 	if _, err := os.Stat(fanStockCopy()); err != nil {
-		t.Fatal("no copy of Goldshell's file kept")
+		t.Fatal("no copy of the OEM's file kept")
 	}
 	if err := fanCheckStock(); err != nil {
 		t.Fatal(err)

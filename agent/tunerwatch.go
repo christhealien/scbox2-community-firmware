@@ -118,7 +118,7 @@ func tunerForceEnd(t *tunerEngine, why string) {
 			put += "; the miner stays where the fan lock or the pool guard put it"
 		} else if genMoved(t.planGen) {
 			put += "; the miner stays on the Idle the thermal guard put it on"
-		} else if err := tunerForceApply(b.hw()); err != nil { // (Box II: the engine's rank as Goldshell's level)
+		} else if err := tunerForceApply(b.hw()); err != nil { // (Box II: the engine's rank as the OEM's level)
 			put += fmt.Sprintf("; putting %s back failed (%v): apply "+stockWord()+" or a preset (Presets tab)", b.text(), err)
 		} else {
 			put += "; the miner is back on " + b.text()

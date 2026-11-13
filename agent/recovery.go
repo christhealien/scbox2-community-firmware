@@ -3,7 +3,7 @@ package main
 // Recovery (Settings → Recovery), both off by default:
 //
 //   - Hardware watchdog. The SoC has one (S60wdt loads imapx_wdt with tmr_atboot=0) but nothing in
-//     Goldshell's firmware ever opens /dev/watchdog (traced: libsys has system_enable/feed_watchdog,
+//     the OEM's firmware ever opens /dev/watchdog (traced: libsys has system_enable/feed_watchdog,
 //     no program calls them), so a frozen control board stays frozen until someone pulls the power
 //     (seen on SClite-1: every program stopped in the same second, 2 h dead). When switched on, the
 //     agent opens /dev/watchdog, asks for a 60 s timeout and feeds it every few seconds from its own

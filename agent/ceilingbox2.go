@@ -156,7 +156,7 @@ func ceilBox2BaseErr(base powerplan) error {
 }
 
 // ceilAbortBox2C: the probe's heat abort: the model's default abort (82 °C on the Box II: the panel's heat guard,
-// 4 °C under Goldshell's 86 °C cut-off), two readings in a row; AbortMaxC (84) stops it at once.
+// 4 °C under the OEM's 86 °C cut-off), two readings in a row; AbortMaxC (84) stops it at once.
 func ceilAbortBox2C() float64 { return min(ceilAbortC, model.AbortDefC) }
 
 // ceilReading: the counters the guards compare against.

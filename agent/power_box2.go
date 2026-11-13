@@ -11,8 +11,8 @@ package main
 //   - The running setting is what the miner itself reports (cgminer API devs: "clock" and "voltage" = trim
 //     code), so it is right whichever way the setting was made (stock plan via minerd, or a later pgaset).
 //   - A setting with a wall-meter reading shows that reading (the owner's own unit, fans and PSU included).
-//   - A stock plan without a reading shows Goldshell's published figure for that mode, marked ≈ and "Goldshell
-//     spec ±5 %" (source: Goldshell's BOX II product page; see REPORT.md).
+//   - A stock plan without a reading shows the OEM's published figure for that mode, marked ≈ and "OEM
+//     spec ±5 %" (source: the OEM's BOX II product page; see REPORT.md).
 //   - Any other setting shows NO number: "not calibrated for this setting". No interpolation between the plans
 //     (they differ in clock AND trim code, and the code's effect on the rail is unmeasured) and no extrapolation.
 //   - Watts are NOT scaled with the measured hashrate: at a fixed clock and rail the chips' draw doesn't follow
@@ -31,8 +31,8 @@ import (
 	"time"
 )
 
-// box2PowerSpec: Goldshell's published wall power for a stock mode (BOX II product page, "Support SiaCoin
-// mining", goldshell.com/?p=77152: default 1.9 T ±5 % · 400 W ±5 % · 211 W/T; low-power 1.45 T · 260 W ·
+// box2PowerSpec: the OEM's published wall power for a stock mode (BOX II product page, "Support SiaCoin
+// mining", on the OEM's website: default 1.9 T ±5 % · 400 W ±5 % · 211 W/T; low-power 1.45 T · 260 W ·
 // 179 W/T). Matched to the profile's stock tuples by mode: 1.9/1.45 = 1.31 ≈ 690/525 = 1.31.
 type box2PowerSpec struct {
 	Mode  string
@@ -48,7 +48,7 @@ var box2PowerSpecs = []box2PowerSpec{
 }
 
 const (
-	box2SpecTolPct  = 5                                                 // Goldshell's stated ± on power and hashrate
+	box2SpecTolPct  = 5                                                 // the OEM's stated ± on power and hashrate
 	box2SpecSource  = "the OEM's published figure for this mode (±5 %)" // shown with an uncalibrated stock figure
 	box2PowerMaxCal = 8                                                 // settings with a reading (keeps the FAT file tiny)
 	box2LowHashFrac = 0.8                                               // under this × the reference hashrate: say so

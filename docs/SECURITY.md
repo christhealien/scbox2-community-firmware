@@ -1,7 +1,7 @@
 # Security and privacy
 
 What the SC Box II Community Firmware opens on your network, what it contacts and when, which accounts exist,
-and how updates are checked. Everything here describes the **public build** (v0.5.0).
+and how updates are checked. Everything here describes the **public build** (v0.5.1).
 
 **In short:** the panel and SSH answer only on your local network, one password protects both, nothing contacts
 the internet except the time servers (and DNS to find them) unless you set something up, and the miner runs fully

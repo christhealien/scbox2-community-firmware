@@ -160,7 +160,7 @@ func TestR6ScheduleReEnableRestoresStaleBefore(t *testing.T) {
 	}
 }
 
-// 4. A run whose end couldn't put the miner back (Goldshell's backend didn't answer) keeps its restart marker on
+// 4. A run whose end couldn't put the miner back (the OEM's backend didn't answer) keeps its restart marker on
 // purpose: "choose Stock or a preset, or reboot". The owner chooses (here Idle). At the next panel restart
 // (an update, a power cut: days later) tunerRecover still finds the marker and puts the run's baseline back over
 // the owner's choice: an Idle is woken. Untouched, the baseline must still come back.

@@ -60,7 +60,7 @@ func settingText() string {
 	on := ""
 	if pp, ok := readStockBaseline("current"); ok && pp.FreqMHz > 0 {
 		on = fmt.Sprintf("%d MHz · %d mV · PV %d", pp.FreqMHz, pp.VrunMv, pp.PVMv)
-		if model.Plan == planBox2V { // no mV / PV here: "V" is Goldshell's voltage level
+		if model.Plan == planBox2V { // no mV / PV here: "V" is the OEM's voltage level
 			on = fmt.Sprintf("%d MHz · %s", pp.FreqMHz, box2LevelText(pp.VrunMv))
 		}
 	}

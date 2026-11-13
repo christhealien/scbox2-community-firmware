@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// r4-fancheck: "Re-run Goldshell's fan test" (fanTestRerunSteps). These run the real steps, so each takes
-// ~95 s (the 90 s wait for Goldshell's start-up fan test is fixed in the code). Set R4_SLOW=1 to run them.
+// r4-fancheck: "Re-run the OEM's fan test" (fanTestRerunSteps). These run the real steps, so each takes
+// ~95 s (the 90 s wait for the OEM's start-up fan test is fixed in the code). Set R4_SLOW=1 to run them.
 
 type r4Miner struct {
 	mu   sync.Mutex
@@ -154,7 +154,7 @@ func TestR4TunerStartsDuringRerun(t *testing.T) {
 	cfg.DryRun = true
 	r := r4Post(handleTuner, "/api/tuner", map[string]any{"action": "start", "config": cfg})
 	if r["ok"] == true {
-		t.Fatalf("BUG: a tuning run started while Goldshell's fan test was being re-run (the re-run puts its own setting back when it ends): %v", r)
+		t.Fatalf("BUG: a tuning run started while the OEM's fan test was being re-run (the re-run puts its own setting back when it ends): %v", r)
 	}
 }
 

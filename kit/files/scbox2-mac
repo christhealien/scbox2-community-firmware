@@ -1,6 +1,6 @@
 #!/bin/sh
 # scbox2: the MAC address eth0 starts with, from the panel (Settings -> Network -> MAC address).
-# Run by /etc/init.d/S40network right after Goldshell's maccfg and before eth0 comes up, so DHCP sees the
+# Run by /etc/init.d/S40network right after the OEM's maccfg and before eth0 comes up, so DHCP sees the
 # right address from the first packet. On some boards maccfg can't keep an address (it can't read the board's
 # settings area) and the network chip starts with a different one at every boot; this keeps it steady.
 #

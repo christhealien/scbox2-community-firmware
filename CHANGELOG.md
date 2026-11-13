@@ -5,6 +5,21 @@ All notable changes to the SC Box II Community Firmware. Newest first.
 Versions before 0.5.0 were test builds, run on one SC Box II. In those builds every hardware control shipped off
 and was switched on per unit after a hardware test (C1–C9). Those test codes appear in the history below.
 
+## v0.5.1: neutral naming and new look
+
+No change to mining, clocks, voltages or fans.
+
+- **Vendor-neutral wording everywhere:** the panel, its messages and activity log, the files the firmware writes
+  (`/etc/scbox2-release`), the log export, the build kit and every document now call the miner's manufacturer
+  "the OEM". Log lines streamed from the stock programs show the same neutral naming. The only literal vendor
+  strings left are the ones the firmware must match on the device (the model the stock miner reports, the cloud
+  hosts it blocks, a stock login it disables), never shown.
+- **New logo and banner:** the panel's gold ₿ block is now the project mark, in the README banners (dark and light).
+- **Docs:** the SSH server's build step (`kit/tools/build-sshd-box2.sh`, `--sshd`) added to the README and
+  [docs/BUILDING.md](docs/BUILDING.md).
+- **Tests:** a test file no longer contains a token-shaped string or a real wallet address (GitHub's secret
+  scanning flagged the made-up token used to test log redaction).
+
 ## v0.5.0: first public release
 
 The first public release. The hardware controls that passed their tests on real hardware now ship **on**, and

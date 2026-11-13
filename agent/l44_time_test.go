@@ -208,7 +208,7 @@ func TestL44FanLockEngagesAfterRebootToUnsetClock(t *testing.T) {
 	write(now, r4Good)
 	fanLockTick(now)
 	if fanLockErr() == nil || *idled == 0 {
-		t.Fatal("BUG: two fan kills by Goldshell's watchdog on the 1970 clock after a reboot: no fan lock (an unlock saved before the reboot hides every kill)")
+		t.Fatal("BUG: two fan kills by the OEM's watchdog on the 1970 clock after a reboot: no fan lock (an unlock saved before the reboot hides every kill)")
 	}
 	os.Remove(fanLockPath())
 }
@@ -239,7 +239,7 @@ func TestL44BoardAutoRestartSavedOnUnsetClock(t *testing.T) {
 
 // fanctrl shut the boards down for heat while the clock read 1970 (the latch only a reboot clears). The owner
 // opens the panel and the browser sets the clock: the line was "before this boot", so the Dashboard didn't say
-// why the miner was down, and Re-run Goldshell's fan test (which clears the shutdown) wasn't refused.
+// why the miner was down, and Re-run the OEM's fan test (which clears the shutdown) wasn't refused.
 func TestL44OverTempLoggedOnUnsetClock(t *testing.T) {
 	boot := time.Now().Add(-20 * time.Minute).Unix()
 	log := " [2026-11-04 09:00:00]  Disable CPB, For Temperature Is Greater Than 92 \n" + // a boot before

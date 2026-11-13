@@ -183,7 +183,7 @@ func TestL18FanLockAfterFanAlertIsNotified(t *testing.T) {
 	srv := l18Srv(t, "127.0.0.1:47365", fd.h)
 	setupNotify(t, srv.URL, 30)
 	notifyForce(evFan, "fan 2 stopped (0 rpm). Check it isn't blocked or unplugged")
-	fanLockNotify("mining stopped and locked: fan 2 (Goldshell's watchdog keeps stopping mining while a fan looks failed)")
+	fanLockNotify("mining stopped and locked: fan 2 (the OEM's watchdog keeps stopping mining while a fan looks failed)")
 	m := fd.wait(func(m []string) bool { return len(m) >= 2 })
 	if !l18Has(m, "mining stopped and locked") {
 		t.Fatalf("the fan lock stopped mining and the owner wasn't told: %q", m)

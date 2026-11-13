@@ -874,7 +874,7 @@ func loadNetConfig() {
 		return
 	}
 	// the same rules as saving it (an older version saved any port): not the mining program's 4028, not
-	// under 1024 (80 is Goldshell's backend, 22/443 are SSH's and https'), not SSH's own
+	// under 1024 (80 is the OEM's backend, 22/443 are SSH's and https'), not SSH's own
 	if c.Port >= 1024 && c.Port <= 65535 && c.Port != 4028 && c.Port != sshPort(c) {
 		*listenAddr = fmt.Sprintf(":%d", c.Port)
 	} else if c.Port != 0 && c.Port != 8080 {
@@ -1195,7 +1195,7 @@ func handleDisplay(w http.ResponseWriter, r *http.Request) {
 }
 
 // softRestartMining restarts mining through the stock firmware's PUT /mcb/restart. In minerd 2.2.0 that
-// handler is Goldshell's "Restart miner": sync(), then system("reboot"), a whole-miner reboot (the panel
+// handler is the OEM's "Restart miner": sync(), then system("reboot"), a whole-miner reboot (the panel
 // with it); minerd has no GET /mcb/restart. So it's noted as a reboot the panel asked for (not "the miner
 // restarted without the panel asking"), and the note goes again when the backend refused it.
 func softRestartMining() error {
@@ -1207,7 +1207,7 @@ func softRestartMining() error {
 	return nil
 }
 
-// handleRestart: "Restart mining" via the stock firmware's PUT /mcb/restart. Goldshell's minerd answers it with
+// handleRestart: "Restart mining" via the stock firmware's PUT /mcb/restart. The OEM's minerd answers it with
 // sync() and system("reboot"): on this firmware it is a full reboot (see softRestartMining).
 func handleRestart(w http.ResponseWriter, r *http.Request) {
 	if getCharge() == "tuner" {
@@ -1652,12 +1652,12 @@ type dashboard struct {
 	Commission string             `json:"commission,omitempty"` // the commissioned features this panel run applied (commissionSig; "" on the SC Lite)
 	Elapsed    int                `json:"elapsed"`
 	Boards     []board            `json:"boards"`
-	Watchdog   *watchdogView      `json:"watchdog,omitempty"`           // Goldshell's watchdog: fan RPM and the fans it flags
+	Watchdog   *watchdogView      `json:"watchdog,omitempty"`           // the OEM's watchdog: fan RPM and the fans it flags
 	Warn       string             `json:"warn,omitempty"`               // shown above the Live tiles while mining still answers
 	FanLock    *fanLockState      `json:"fan_lock,omitempty"`           // mining locked after a fan problem (fanlock.go)
 	Health     []boardHealth      `json:"board_health,omitempty"`       // per-board start-up chips, re-inits, dropped results (boardhealth.go)
 	Unexpected *unexpectedRestart `json:"unexpected_restart,omitempty"` // restarted without the panel asking (recovery.go)
-	OverTemp   *overTempState     `json:"over_temp,omitempty"`          // Goldshell shut the boards down for heat (overtemp.go)
+	OverTemp   *overTempState     `json:"over_temp,omitempty"`          // the OEM shut the boards down for heat (overtemp.go)
 }
 
 var (
@@ -1999,7 +1999,7 @@ func readPools() ([]poolView, error) {
 	return out, nil
 }
 
-// poolURLErr: why Goldshell's programs can't take this pool address ("" = fine). Their watchdog (xminerd)
+// poolURLErr: why the OEM's programs can't take this pool address ("" = fine). Their watchdog (xminerd)
 // cuts the first 14 characters ("stratum+tcp://") off the address without checking: a shorter one crashed it
 // at every start (no fan check at all), and one of 128+ characters overran its buffer.
 func poolURLErr(u string) string {
@@ -2025,7 +2025,7 @@ func hasCtrl(s string) bool {
 	return false
 }
 
-// poolCredErr: why Goldshell's programs can't take this pool user/worker or password ("" = fine; the caller
+// poolCredErr: why the OEM's programs can't take this pool user/worker or password ("" = fine; the caller
 // defaults a blank password to "x"). Mirrors poolURLErr's intent for the credential fields, which otherwise
 // reach the same stock programs and the log exporter unchecked.
 func poolCredErr(what, s string) string {
@@ -2041,7 +2041,7 @@ func poolCredErr(what, s string) string {
 // fetchPoolList gets the editable pool list from the stock web, returning the opaque pool
 // objects and the wrapper shape ("array" or "pools") so putPoolList can put it back exactly.
 // noPoolSet: no pool is configured, so the stock launcher doesn't start the miner (a fresh setup). Asks
-// Goldshell's backend first; if that doesn't answer either, the miner's own config file decides (missing,
+// the OEM's backend first; if that doesn't answer either, the miner's own config file decides (missing,
 // or no pool with an address in it).
 func noPoolSet() bool {
 	if arr, _, err := fetchPoolList(); err == nil {
@@ -2345,7 +2345,7 @@ func handlePools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "pools": pools})
 }
 
-// configuredPools: the pool list as set up (Goldshell's backend, or the miner's own config file if the
+// configuredPools: the pool list as set up (the OEM's backend, or the miner's own config file if the
 // backend doesn't answer either), for when the mining engine isn't running and can't report its pools.
 func configuredPools() ([]poolView, error) {
 	list, _, err := fetchPoolList()
@@ -2850,7 +2850,7 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 }
 
 // stockPlans returns the firmware's power plans in the order its own page lists them. "select" is a
-// position in this list (Goldshell's page: value = the list index), not the plan's "level" field: on the
+// position in this list (the OEM's page: value = the list index), not the plan's "level" field: on the
 // SC Lite the idle plan is at position 1 with level 3. Some firmware nests the plans per algorithm
 // ({algo, mode: [...]}, chosen by "algoname"); then the list is the current algorithm's modes.
 func stockPlans(cur map[string]any) []map[string]any {
@@ -2887,7 +2887,7 @@ func stockPlanAt(cur map[string]any, sel int) (powerplan, bool) {
 	return stockPlanOf(ps[sel])
 }
 
-// stockPlanOf parses one stock plan entry. On the SC Box II Goldshell's backend sometimes rewrites a plan's
+// stockPlanOf parses one stock plan entry. On the SC Box II the OEM's backend sometimes rewrites a plan's
 // info text with "0.000000 V" (seen on hardware: "690 MHz 0.000000 V 40 RPM 40 RPM" for the 690 MHz / code 42
 // plan); the entry's own "voltage" field (42.00001) still holds the code, so the code is taken from there.
 // Without this every write on top of that plan (the fan curve, the thermal guard's 100 %) was refused as
@@ -2910,7 +2910,7 @@ func stockSelect(cur map[string]any) int {
 	return 0
 }
 
-// box2DefaultIndex: on the SC Box II, the list position of Goldshell's factory default plan (the Hashrate
+// box2DefaultIndex: on the SC Box II, the list position of the OEM's factory default plan (the Hashrate
 // tuple, 690 MHz / level 42). "Stock" means that plan: the firmware's "select" moves with every stock mode
 // picked (Low-power selects the 525 MHz plan), so it can't stand for the factory setting. -1 elsewhere.
 func box2DefaultIndex(cur map[string]any) int {
@@ -3253,7 +3253,7 @@ func tryStockPw(pw string) (tok string, unreachable bool, err error) {
 	return tok, false, nil
 }
 
-// factoryStockPws: Goldshell's factory web passwords (SC Lite 2.2.0 ships 123456789; older units use admin).
+// factoryStockPws: the OEM's factory web passwords (SC Lite 2.2.0 ships 123456789; older units use admin).
 var factoryStockPws = []string{"123456789", "admin"}
 
 var (
@@ -3337,7 +3337,7 @@ func stockLogin() error {
 func stockReq(method, path string, body []byte) ([]byte, error) {
 	if method == "PUT" && strings.HasPrefix(path, "/mcb/setting") {
 		// a power-plan write sets all four fans to one level (intminer): put fans 2+3 back on their offset
-		// right away, so Goldshell's fan check never sees them at a level they aren't really turning at
+		// right away, so the OEM's fan check never sees them at a level they aren't really turning at
 		defer fanPairKick()
 	}
 	var tok string
@@ -3804,7 +3804,7 @@ func buildPowerplan(p powerplan) string {
 
 // planShow: a plan as the owner reads it (activity log, the chart's marks, Controls' "applied"). SC Lite: the
 // plan string itself, unchanged. Box II: its raw string reads "690 MHz 42 V 50 RPM 41 RPM", where "42 V" is
-// Goldshell's voltage level (not volts) and the 4th field is a voltage-trim PWM (not a fan), so say what it is.
+// the OEM's voltage level (not volts) and the 4th field is a voltage-trim PWM (not a fan), so say what it is.
 func planShow(p powerplan) string {
 	if model.Plan == planBox2V {
 		return fmt.Sprintf("%d MHz · %s", p.FreqMHz, box2LevelText(p.VrunMv))
@@ -4577,7 +4577,7 @@ func mutatePlanEx(mut func(*powerplan), wake bool, gen int64) (string, error) {
 	return plan, nil
 }
 
-// putRefusedErr: Goldshell's backend answered a plan write with a 4xx: it refused that plan. Not a backend that
+// putRefusedErr: the OEM's backend answered a plan write with a 4xx: it refused that plan. Not a backend that
 // didn't answer, and not one of the panel's own refusals (the clock window, a hold).
 type putRefusedErr struct{ error }
 
@@ -5213,7 +5213,7 @@ func minerOnIdlePlan() bool {
 // there is NO stock idle plan: idleAction is A1's stub (returns "no idle plan") until lane B3 wires the real
 // miner-API board-off. While there is no working park, the guard must NOT pretend the boards are cooling on
 // Idle (that would falsely block presets and tell the owner it is off) — instead thermalNoPark drives the fans
-// to 100 % and says plainly that only Goldshell's own cut-off will actually stop the boards. It never silently
+// to 100 % and says plainly that only the OEM's own cut-off will actually stop the boards. It never silently
 // does nothing.
 func thermalIdle(why string) error {
 	now := time.Now().Unix()
@@ -5255,7 +5255,7 @@ func thermalIdle(why string) error {
 
 // thermalNoPark is the emergency when a model has no working park action yet (the SC Box II until B3 wires
 // idleAction's real board-off). It drives the fans to 100 % for maximum cooling and warns — once per
-// overheat episode — that the panel cannot stop the boards, so only Goldshell's own TempCutoffC cut-off
+// overheat episode — that the panel cannot stop the boards, so only the OEM's own TempCutoffC cut-off
 // will. It deliberately does NOT engage the cool-down hold (the boards are still hashing, not cooling on
 // Idle) and returns a non-nil error so the fan loop keeps trying (and keeps the fans pinned) each tick.
 func thermalNoPark(why string, parkErr error) error {
@@ -5316,7 +5316,7 @@ func fanTick(c fanConfig) {
 		fanSt.Note, fanSt.Guard = "no temperature readings", ""
 		fanSt.MaxT, fanSt.HotBoard, fanSt.Target = -1000, -1, -1 // the last reading isn't today's temperature
 		fanMu.Unlock()
-		// hashing with no temperature at all: Goldshell's fan controller then runs the fans full but never
+		// hashing with no temperature at all: the OEM's fan controller then runs the fans full but never
 		// shuts the boards down for heat (traced). After 3 minutes blind, the miner goes to Idle.
 		hashing := false
 		for _, b := range d.Boards {
@@ -5459,11 +5459,11 @@ func fanTick(c fanConfig) {
 	}
 
 	// a tuning run that holds the fans owns them: two writers would fight (every write is a settings PUT that
-	// Goldshell's backend now and then dies on). Only the abort tier's 100 % still goes through.
+	// the OEM's backend now and then dies on). Only the abort tier's 100 % still goes through.
 	if target >= 0 && target < 100 && tunerHoldsFans() {
 		target, note = -1, "the tuner is holding the fans for its run (the thermal guard stays on)"
 	}
-	// Goldshell's start-up fan test records each fan's speed at each level (xminerd's first 90 s, or a re-run):
+	// The OEM's start-up fan test records each fan's speed at each level (xminerd's first 90 s, or a re-run):
 	// a curve write now would have it record the wrong speeds (as the fan pair offset, it waits). Only the
 	// abort tier's 100 % still goes through.
 	sweeping := target >= 0 && fanTestRunning()
@@ -6049,7 +6049,7 @@ func settingRestorer(raw []byte) (func() error, string) {
 	what := "its own setting"
 	if ok && pp.FreqMHz > 0 {
 		what = fmt.Sprintf("%d MHz · %d mV", pp.FreqMHz, pp.VrunMv)
-		if model.Plan == planBox2V { // its "voltage" is Goldshell's level, not millivolts
+		if model.Plan == planBox2V { // its "voltage" is the OEM's level, not millivolts
 			what = planShow(pp)
 		}
 	}
@@ -6169,7 +6169,7 @@ func readStockBaselineNow(src string) (powerplan, bool) {
 	if src == "current" {
 		return resolveRunningPlan(cur)
 	}
-	// stock: the plan at the selected level (not the manual override). On the SC Box II "Stock" is Goldshell's
+	// stock: the plan at the selected level (not the manual override). On the SC Box II "Stock" is the OEM's
 	// factory default (the 690 MHz / level 42 plan), whichever of its two stock modes is selected now
 	if i := box2DefaultIndex(cur); i >= 0 {
 		return stockPlanAt(cur, i)
@@ -6377,6 +6377,7 @@ func (h *hub) unsub(ch chan string) {
 	h.mu.Unlock()
 }
 func (h *hub) emitRaw(line string) {
+	line = stockTextShown(line) // a stock program's line (mining log) shows no manufacturer's name
 	h.mu.Lock()
 	for ch := range h.subs {
 		select {
@@ -7148,7 +7149,7 @@ func handleLog(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, l := range kept {
 				select {
-				case out <- l:
+				case out <- stockTextShown(l):
 				case <-ctx.Done():
 					return
 				}
@@ -7165,7 +7166,7 @@ func handleLog(w http.ResponseWriter, r *http.Request) {
 				if len(line) > 0 {
 					if l := strings.TrimRight(line, "\r\n"); !noise(l) {
 						select {
-						case out <- l:
+						case out <- stockTextShown(l):
 						case <-ctx.Done():
 							return
 						}
@@ -7233,20 +7234,19 @@ var pageBuild, indexPage = func() (string, string) {
 	page := strings.NewReplacer("'sclite-", "'"+brand+"-", "/etc/sclite-mac", brandMacScript,
 		"<title>SC Lite</title>", "<title>"+brandProduct+"</title>", // the tab title before the model loads (sign-in)
 		`class="brand">SC&nbsp;LITE`, `class="brand">`+brandHeader, // the header name before the model loads
-		"return (m&&m.name)||'SC Lite';}", "return (m&&m.name)||'"+brandProduct+"';}",
-		"?'OEM':'Goldshell');}", "?'OEM':'"+brandOEM+"');}").Replace(indexHTML) // the manufacturer's name before the model loads (OEM())
+		"return (m&&m.name)||'SC Lite';}", "return (m&&m.name)||'"+brandProduct+"';}").Replace(indexHTML)
 	h := sha256.Sum256([]byte(page))
 	b := hex.EncodeToString(h[:6])
 	return b, strings.Replace(page, "__PAGE_BUILD__", b, 1)
 }()
 
 func main() {
-	backupFlag := flag.String("backup", "/backup", "where Goldshell's own programs keep their logs")
-	productFlag := flag.String("product", "/root/product.json", "Goldshell's product file (fans' max RPM)")
-	mcbFlag := flag.String("mcbversion", "/root/mcbversion", "Goldshell's control-board version file (model profile match)")
+	backupFlag := flag.String("backup", "/backup", "where the OEM's own programs keep their logs")
+	productFlag := flag.String("product", "/root/product.json", "The OEM's product file (fans' max RPM)")
+	mcbFlag := flag.String("mcbversion", "/root/mcbversion", "The OEM's control-board version file (model profile match)")
 	flag.Parse()
 	backupRoot, productPath = *backupFlag, *productFlag
-	// Pick the model profile from Goldshell's own identity files. A mismatch yields the "unknown" profile
+	// Pick the model profile from the OEM's own identity files. A mismatch yields the "unknown" profile
 	// (monitoring only, every write feature off). This seeds the clock/voltage windows for the whole run.
 	model, modelWhy = loadModelFiles(productPath, *mcbFlag)
 	applyCommission() // the features the owner has proven and switched on, on this unit (commission.go)
@@ -7256,7 +7256,7 @@ func main() {
 	// Decide the config write mode (FAT vs ext), note a read-only squashfs root, and clear any *.tmp a power
 	// cut left in the config dir. Must run after the model is known and after flag.Parse (it reads *authFile).
 	initConfigStore()
-	// On the Box II the Goldshell daemons' log dir (/backup) would be on flash; keep those scratch logs in RAM
+	// On the Box II the OEM daemons' log dir (/backup) would be on flash; keep those scratch logs in RAM
 	// instead (R04/R19). The SC Lite's /backup is on ext and unchanged. A boot script that passes -backup wins.
 	if model.Plan == planBox2V && *backupFlag == "/backup" {
 		backupRoot = "/dev/shm"
@@ -8047,7 +8047,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
    <div class="panel" id="fppanel"><div class="hdr"><b>Fan pair offset</b><span class="pill" id="fpnote">off</span></div>
      <div id="fpbody"><div class="busy"><span class="muted">Loading…</span><div class="rbar indet"><div class="rfill"></div></div></div></div></div>
    <div class="panel" id="fcpanel"><div class="hdr"><b>Fan check</b><span class="pill" id="fcnote">—</span></div>
-     <p class="muted sc-intro"><span data-box2="The OEM watchdog">Goldshell’s watchdog</span> checks every fan and stops mining while one looks failed. It expects the stock fans (2200 RPM at full speed) and flags a fan under 80 % of that, scaled to the fan speed (1700 RPM at 100 %): quieter replacement fans are flagged even while they work. Here you can fit its figures to this miner’s own fans, measured at boot; a fan that slows down a lot or stops is still caught.</p>
+     <p class="muted sc-intro">The OEM watchdog checks every fan and stops mining while one looks failed. It expects the stock fans (2200 RPM at full speed) and flags a fan under 80 % of that, scaled to the fan speed (1700 RPM at 100 %): quieter replacement fans are flagged even while they work. Here you can fit its figures to this miner’s own fans, measured at boot; a fan that slows down a lot or stops is still caught.</p>
      <div id="fcbody"><div class="busy"><span class="muted">Loading…</span><div class="rbar indet"><div class="rfill"></div></div></div></div></div>
    <div class="panel" id="curvepanel"><div class="hdr"><b>Fan curves</b><span class="pill" id="cvDirty">saved</span></div>
      <p class="muted sc-intro">The curve says how fast the fans run at each board temperature (the hottest board counts). Drag a point to move it, click an empty spot to add one, double-click a point to remove it (or select it and press Delete). Built-in curves can’t be changed: press <b>Copy to edit</b>. The miner’s own fan control slowly turns the fans back down, so the panel re-sends the curve’s value every few seconds.</p>
@@ -8224,7 +8224,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
      <div class="muted cm-intro">This miner’s control features ship <b>switched off</b>. Each one has a hardware test in the commissioning guide (C1–C9). Switch a feature on only after its test has passed on this miner. Switching off is always safe and needs no password. Flashing the SD card resets every switch to off.</div>
      <div id="combody"><div class="busy"><span class="muted">Loading…</span><div class="rbar indet"><div class="rfill"></div></div></div></div></div>
    <div class="panel"><div class="hdr"><b>Restart &amp; reboot</b></div>
-     <div class="muted" style="font-size:12.5px;margin-bottom:10px;line-height:1.5"><b>Restart mining</b> asks <span data-box2="the OEM backend">Goldshell’s backend</span> to restart the miner: on this firmware that reboots it (the panel too, 1–2 min). <b>Reboot</b> reboots the whole miner directly (1–2 min).</div>
+     <div class="muted" style="font-size:12.5px;margin-bottom:10px;line-height:1.5"><b>Restart mining</b> asks the OEM backend to restart the miner: on this firmware that reboots it (the panel too, 1–2 min). <b>Reboot</b> reboots the whole miner directly (1–2 min).</div>
      <div class="row"><button onclick="softRestart()">↻ Restart mining</button><button onclick="fullReboot()" style="color:var(--bad)">⟳ Reboot miner</button><span class="muted" id="powmsg" style="align-self:center"></span></div>
      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:12.5px"><input type="checkbox" id="bdauto" onchange="setBoardAuto(this.checked)" checked> <span><b>Restart mining by itself when a hash board stops hashing</b> <span class="muted">(after 3 minutes; at most once an hour, and not during <span id="bdautotuner">the tuner, </span>the strong-chip test or a thermal Idle). A board that drops out usually stays out until mining restarts.</span></span></label></div>
    <div class="panel"><div class="hdr"><b>Recovery</b><span class="muted" id="recnote"></span></div>
@@ -8312,29 +8312,27 @@ function PUB(){const m=MODEL();return !!(m&&m.public);}
 function modelName(){const m=MODEL();return (m&&m.name)||'SC Lite';}
 function F(){const m=MODEL();return (m&&m.features)||{};}
 function isOtherModel(){const m=MODEL();return !!(m&&m.id&&m.id!=='sclite');}
-// OEM: the miner's manufacturer in text people read (/api/model "oem", or the Box II plan): never named on the Box II ("OEM"),
-// "Goldshell" on the SC Lite (its text unchanged). oemOf: "Goldshell’s watchdog" / "the OEM watchdog";
-// oemPoss: "Goldshell’s figures" / "the OEM’s figures"; the capitalised forms start a sentence; oemFw: who
-// cuts the boards off ("Goldshell" / "the OEM firmware").
-function OEM(){const m=MODEL();return (m&&m.oem)||(m&&m.plan==='box2v'?'OEM':'Goldshell');}
-function oemLite(){return OEM()==='Goldshell';}
-function oemOf(){return oemLite()?'Goldshell’s':'the '+OEM();}
-function OemOf(){return oemLite()?'Goldshell’s':'The '+OEM();}
-function oemPoss(){return oemLite()?'Goldshell’s':'the '+OEM()+'’s';}
-function OemPoss(){return oemLite()?'Goldshell’s':'The '+OEM()+'’s';}
-function oemFw(){return oemLite()?'Goldshell':'the '+OEM()+' firmware';}
-function OemFw(){return oemLite()?'Goldshell':'The '+OEM()+' firmware';}
+// OEM: the miner's manufacturer in text people read (/api/model "oem"): never named, on any model ("OEM").
+// oemOf: "the OEM watchdog"; oemPoss: "the OEM’s figures"; the capitalised forms start a sentence; oemFw: who
+// cuts the boards off ("the OEM firmware").
+function OEM(){const m=MODEL();return (m&&m.oem)||'OEM';}
+function oemOf(){return 'the '+OEM();}
+function OemOf(){return 'The '+OEM();}
+function oemPoss(){return 'the '+OEM()+'’s';}
+function OemPoss(){return 'The '+OEM()+'’s';}
+function oemFw(){return 'the '+OEM()+' firmware';}
+function OemFw(){return 'The '+OEM()+' firmware';}
 // featOff2: true only once a non-SC-Lite profile is loaded AND its gate is off. SC Lite (all gates on)
 // and the pre-load window both return false everywhere, so SC Lite behaviour is unchanged.
 function featOff2(on){return isOtherModel()&&!on;}
 // B2T: the tuner form speaks trim codes (no PV, no +300 gap) on a planBox2V model. TGAP: the PV gap the form adds.
 function B2T(){const m=MODEL();return !!(m&&m.plan==='box2v');}
 function TGAP(){return B2T()?0:300;}
-// b2Name: the name a person sees for a preset key. On Box II Goldshell's two stock modes ("Hashrate" /
+// b2Name: the name a person sees for a preset key. On Box II the OEM's two stock modes ("Hashrate" /
 // "Low-power": the keys the API, the schedule's rules and the charge keep) read "Stock High" / "Stock Low", and
 // "Stock" (the factory default: the same plan as Hashrate) reads "Stock High" (Go: presetLabel). Unchanged elsewhere.
 function b2Name(n){if(!B2T())return n;const l=String(n==null?'':n).toLowerCase();return (l==='hashrate'||l==='stock')?'Stock High':l==='low-power'?'Stock Low':n;}
-// b2Stock: a Box II stock mode's key (its card is Goldshell's plan, not a preset someone set or tested)
+// b2Stock: a Box II stock mode's key (its card is the OEM's plan, not a preset someone set or tested)
 function b2Stock(n){return B2T()&&/^(hashrate|low-power)$/i.test(String(n==null?'':n));}
 // chargeTxt: an in_charge value ("preset Hashrate", "stock settings": compared as is) as a person reads it (Go: chargeText)
 function chargeTxt(lk){if(!B2T()||!lk)return lk;if(lk==='stock settings')return 'Stock High';const m=/^preset (.*)$/.exec(lk);return m?('preset '+b2Name(m[1])):lk;}
@@ -8419,7 +8417,7 @@ async function loadRecovery(){try{const r=await fetch('/api/recovery');renderRec
 function renderRecovery(v){if(!v||!v.ok){$('recbody').innerHTML='<span class="muted">'+hesc((v&&v.err)||'unavailable')+'</span>';return;}
  $('recnote').textContent=(v.watchdog_running?'watchdog on':'watchdog off')+' · '+(v.keep_log?'log kept':'log not kept');
  if(isOtherModel()){renderRecoveryBox2(v);return;}
- let h='<div class="muted" style="font-size:12.5px;line-height:1.5;margin-bottom:8px">If the control board itself freezes (every program stops, the miner drops off the network), nothing in Goldshell’s firmware brings it back: it stays dead until the power is cut. The hardware watchdog that could fix that can’t be used on this board; keeping the system log at least shows afterwards what happened.</div>';
+ let h='<div class="muted" style="font-size:12.5px;line-height:1.5;margin-bottom:8px">If the control board itself freezes (every program stops, the miner drops off the network), nothing in the OEM’s firmware brings it back: it stays dead until the power is cut. The hardware watchdog that could fix that can’t be used on this board; keeping the system log at least shows afterwards what happened.</div>';
  h+='<label style="display:flex;gap:7px;align-items:center;font-size:13px;opacity:.55"><input type="checkbox" id="recwdt" style="width:auto;margin:0" disabled> <span><b>Reboot by itself if the control board freezes</b> (hardware watchdog): not available</span></label>'
   +'<div class="muted" style="font-size:12px;margin:2px 0 8px 24px;line-height:1.5">This board’s kernel driver for the watchdog chip locks up a processor core the moment it’s switched on (found by taking the kernel apart; it’s what stopped the panel and SSH on v1.5.12). So it stays off, and the panel never touches it.</div>';
  h+='<label style="display:flex;gap:7px;align-items:center;font-size:13px"><input type="checkbox" id="reclog" style="width:auto;margin:0"'+(v.keep_log?' checked':'')+' onchange="recSet({keep_log:this.checked})"> <span><b>Keep the system log across restarts</b></span></label>'
@@ -8676,7 +8674,7 @@ async function ctSet(el){const ch=+el.dataset.chain,c=+el.dataset.chip,v=+el.val
 async function ctReset(){const n=(((window._ctLast||{}).trims)||[]).filter(t=>t.mhz).length;if(!confirm('Remove all '+n+' trim'+(n===1?'':'s')+' (yours, auto-trim’s and the tuner’s) and put every chip back to its board clock?\n\nWith auto-trim on, it may slow a chip again later.'))return;await ctPost({reset:true});}
 async function ctEnable(on){if(!confirm(on?'Switch chip trims on?\n\nMining restarts (about a minute) with a copy of '+oemPoss()+' miner that loads the trim library. With no trims set it mines exactly like stock.':'Switch chip trims off?\n\nMining restarts with '+oemPoss()+' own miner; every chip runs at the board clock. Your trims are kept and come back when you switch chip trims on again.'))return;
  window._rebStart=Date.now();window._rebNominal=150000;await ctPost({enable:on});setTimeout(loadChipTrim,90000);}
-// MAC address: applied at boot by /etc/sclite-mac, right after Goldshell's maccfg.
+// MAC address: applied at boot by /etc/sclite-mac, right after the OEM's maccfg.
 async function loadMAC(){try{const r=await fetch('/api/mac');renderMAC(await r.json());}catch(e){}}
 function renderMAC(m){window._mac=m;const md=m.mode||'keep';const sel=$('s_macmode');if(!sel)return;
  sel.value=md;const i=$('s_mac');if(i)i.value=md==='fixed'?(m.saved||''):'';macModeUI();
@@ -9082,7 +9080,7 @@ async function calibratePower(){const w=+$('s_calw').value;if(!(w>0)){$('s_powms
  toast('Calibrated: '+Math.round(w)+' W at '+j.mhz+' MHz · PV '+j.pv);renderPower(j);if(typeof refresh==='function')refresh();}
 async function clearPowerCal(){if(!confirm('Clear the wall-meter calibration?\n\nWatts go back to typical SC Lite figures.'))return;
  const {j}=await jpost('/api/power',{clear:true});if(j.ok){toast('Calibration cleared');renderPower(j);if(typeof refresh==='function')refresh();}}
-// Box II (planBox2V): a per-setting table of wall-meter readings, Goldshell's published figure for an uncalibrated
+// Box II (planBox2V): a per-setting table of wall-meter readings, the OEM's published figure for an uncalibrated
 // stock mode, nothing for any other setting (power_box2.go). The SC Lite text above is never shown here.
 function pwSetting(m,v){return m+' MHz · '+boxVoltsTxt(v);}
 function pwSrcText(p){return p.source==='meter'?'wall meter':(p.source==='spec'?'OEM spec ±'+(p.spec_tol_pct||5)+' %':'');}
@@ -9122,7 +9120,7 @@ function discHTML(ackDate){const b=
   '<h4>No warranty, no liability</h4>'+
   '<p>This software is provided &quot;as is&quot;, without warranty of any kind. Its authors and contributors take no responsibility and accept no liability for any damage to hardware or property, loss of earnings, injury or any other loss that comes from using it. You alone are responsible for your hardware and for every setting you apply with it, whether by hand or automatically.</p>'+
   '<h4>Not an official product</h4>'+
-  '<p>This firmware is not affiliated with, endorsed by or supported by '+(oemLite()?'Goldshell':'the OEM (the miner’s manufacturer)')+' or any miner manufacturer. Product and model names are only used to say which hardware it works with.</p>';
+  '<p>This firmware is not affiliated with, endorsed by or supported by the OEM (the miner’s manufacturer) or any miner manufacturer. Product and model names are only used to say which hardware it works with.</p>';
  if(ackDate)return b+'<div class="mrow"><span class="muted" style="margin-right:auto;font-size:11px">Acknowledged '+hesc(ackDate)+'</span><button onclick="closeDisclaimer()">Close</button></div>';
  return b+'<div class="mrow"><button class="primary" onclick="acceptDisclaimer()">I understand — continue</button></div>';}
 function showDisclaimer(ackDate){$('discbox').innerHTML=discHTML(ackDate||'');show('discmodal',true);}
@@ -9650,7 +9648,7 @@ function renderControl(j){const c=j.current,oc=!!j.overclock;
  $('ctrlnote').textContent=lk?('locked — '+chargeTxt(lk)):((j.idle?'idle (boards off) · ':'')+(j.manual?'manual':b2SelTxt(j))+(j.idle?'':(j.current&&j.current.freq_mhz?' · '+j.current.freq_mhz+' MHz · '+(B2T()?boxVoltsTxt(j.current.vrun_mv):'PV '+j.current.pv_mv+' mV (run '+j.current.vrun_mv+' mV)'):(j.raw&&!B2T()?' · '+j.raw:''))));
  ctrlWarn();
  if(oc)ocProbeRefresh();}
-// Box II (planBox2V): no PV and no millivolts. The only voltage setting is Goldshell's voltage LEVEL (42–61: a
+// Box II (planBox2V): no PV and no millivolts. The only voltage setting is the OEM's voltage LEVEL (42–61: a
 // higher level is a lower voltage), shown in volts next to it (boxVoltsTxt). With voltage control off (test C4
 // not commissioned) the level follows the clock: the level of the stock plan at that clock or faster (the
 // backend's rule, box2VFor), and Apply sends 0 for it ("the rule's level"), as before.
@@ -10302,7 +10300,7 @@ async function loadFanPair(){if(featBlock('fpbody',F().FanPairOffset,'The fan-pa
  try{const r=await fetch('/api/fanpair');renderFanPair(await r.json());}catch(e){if($('fpbody'))$('fpbody').innerHTML=busyHTML(OFFLINE);retryLater(loadFanPair);}}
 function renderFanPair(v){const el=$('fpbody');if(!el)return;if(!v||!v.ok){el.innerHTML='<span class="muted">'+hesc((v&&v.err)||'unavailable')+'</span>';return;}
  $('fpnote').textContent=v.offset?((v.offset>0?'+':'')+v.offset+' %'):'off';
- el.innerHTML='<p class="muted sc-intro">The board has four fan plugs but only <b>two speed signals</b>: fans 0 and 1 always run at the same level, and so do fans 2 and 3. Fans at nearly the same speed beat against each other (a slow “wow-wow”); running one pair a little apart from the other moves that beat out of the annoying range. Fan curves, Controls, presets, the tuner and '+oemPoss()+' own fan control keep setting fans 0+1; fans 2+3 follow at the offset. They never go under the fan floor (or a tuning run’s lowest fan %), are never held below fans 0+1 when those run at 95 % or more, are never turned down while a board is at 88 °C or more, and are left to '+(oemLite()?'Goldshell':'the OEM fan control')+' on Idle, during its start-up fan test and while mining is locked after a fan problem.</p>'
+ el.innerHTML='<p class="muted sc-intro">The board has four fan plugs but only <b>two speed signals</b>: fans 0 and 1 always run at the same level, and so do fans 2 and 3. Fans at nearly the same speed beat against each other (a slow “wow-wow”); running one pair a little apart from the other moves that beat out of the annoying range. Fan curves, Controls, presets, the tuner and '+oemPoss()+' own fan control keep setting fans 0+1; fans 2+3 follow at the offset. They never go under the fan floor (or a tuning run’s lowest fan %), are never held below fans 0+1 when those run at 95 % or more, are never turned down while a board is at 88 °C or more, and are left to the OEM fan control on Idle, during its start-up fan test and while mining is locked after a fan problem.</p>'
   +'<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap"><span>Fans 2+3 run</span><input type="number" id="fpoff" min="'+v.min+'" max="'+v.max+'" step="1" value="'+v.offset+'" style="width:5rem"><span>% from fans 0+1</span><button onclick="fanPairSave()">Save</button><span class="muted" style="font-size:12px">0 = off · '+v.min+' to +'+v.max+'</span></div>'
   +(v.levels?('<div class="muted" style="font-size:12px;margin-top:6px">Now: fan0 '+v.levels[0]+' % · fan1 '+v.levels[1]+' % · fan2 '+v.levels[2]+' % · fan3 '+v.levels[3]+' %'+(v.note&&!/^fans 0\+1/.test(v.note)?(' · '+hesc(v.note)):'')+'</div>'):'')
   +'<div class="muted" style="font-size:11.5px;margin-top:4px">Try 8–15 % either way. Lower (−) is quieter, higher (+) cools a little more; the fan curve keeps the boards at its temperature either way. A tuning run uses whatever offset is set when it starts.</div>';}
@@ -10327,7 +10325,7 @@ function renderFanCheck(v){const el=$('fcbody');if(!el||!v.ok)return;window._fc=
   +'<div class="muted" style="font-size:11.5px;margin-top:3px">When the watchdog flags a fan for a minute, the miner goes to Idle (hash boards powered down) and stays locked until you’ve checked the fans and unlocked it on the Dashboard. Off: the watchdog keeps stopping and restarting mining by itself.</div></div>';
  el.innerHTML=h;}
 async function fanCheckFit(){const v=window._fc||{};const fit=(v.suggest||[]);
- if(!confirm('Fit the fan check to these fans?\n\nNew max RPM per fan: '+fit.join(', ')+' ('+(oemLite()?'Goldshell’s':OEM())+': '+(v.maxrpm||[]).join(', ')+').\nA fan is then flagged under '+fit.map(f=>Math.floor(f/125)*100).join(' / ')+' RPM at full speed.\n\nTakes effect at the next reboot.'))return;
+ if(!confirm('Fit the fan check to these fans?\n\nNew max RPM per fan: '+fit.join(', ')+' ('+OEM()+': '+(v.maxrpm||[]).join(', ')+').\nA fan is then flagged under '+fit.map(f=>Math.floor(f/125)*100).join(' / ')+' RPM at full speed.\n\nTakes effect at the next reboot.'))return;
  const {j}=await jpost('/api/fancheck',{fit:fit});if(!j.ok){toast(j.err||'failed',true);return;}renderFanCheck(j);toast(j.note||'saved');}
 async function fanTestRerun(){if(!confirm('Re-run '+oemOf()+' fan test?\n\nIts fan check restarts: it forgets the speeds it recorded for each fan and tests them again. The miner goes to Idle for about 2 minutes while the fan check restarts and tests the fans, then goes back to its setting.'))return;
  const {j}=await jpost('/api/fancheck',{rerun:true});if(!j||!j.ok){toast((j&&j.err)||'failed',true);return;}toast(j.note||'restarted');if($('flmsg'))$('flmsg').textContent=j.note||'';}
@@ -10360,12 +10358,12 @@ function fanLine(d){const w=d.watchdog||{},rpm=(w.fans&&w.fans.length?w.fans:nul
  return h;}
 // HW errors tile: the miner's own % and, when some of the errors came from a start-up warm-up (cold chips ramping
 // to full clock), how many, and the % without them: that one says how the board is doing.
-// a plan's voltage text: mV and PV on the SC Lite; on other models the figure is Goldshell's level number (not volts) and there is no PV
+// a plan's voltage text: mV and PV on the SC Lite; on other models the figure is the OEM's level number (not volts) and there is no PV
 // Box II: the voltage in volts, from the C4 lug readings (the rail at the power lugs under load, 690 and 525 MHz):
 // level 42 = 7.67 V, 43 = 7.61, 44 = 7.58, 45 = 7.55, 46 = 7.52, 61 = 7.03. Other levels are estimated from the
 // line through them (about 33.5 mV per level); "≈" marks an estimate. Plain text: it also goes in button labels.
 const BOX_V_MEAS={42:7.67,43:7.61,44:7.58,45:7.55,46:7.52,61:7.03};
-// Box II: the plan's 4th field reads like a second fan RPM in Goldshell's plan text, but it is a voltage trim
+// Box II: the plan's 4th field reads like a second fan RPM in the OEM's plan text, but it is a voltage trim
 function b2F4Note(){return 'On this model the plan’s 4th field (written like a second fan “RPM” in the OEM plan text) is a voltage-trim setting, not a fan speed: the panel always keeps it at the stock value.';}
 function boxVoltsTxt(l){if(!l)return '—';const m=BOX_V_MEAS[l];const v=(m!=null)?m:(7.66-0.0335*(l-42));return (m!=null?'':'≈ ')+v.toFixed(2)+' V';}
 // b2VOpts: the Box II voltage choices for a <select>: every level lo..hi shown as its volts, highest voltage first
@@ -10402,7 +10400,7 @@ function powerTile(d,ghsNow,mk){const p=d.power||{};window._powF=p.factor||0;win
  const ths=(ghsNow||d.ghs)/1000,jth=ths>0.01?Math.round(p.watts/ths):null;
  return mk('Power',(p.calibrated?'':'≈ ')+Math.round(p.watts)+' <span class="muted" style="font-size:12px">W</span>',
   (jth?('<b style="color:var(--text)">'+jth+' J/TH</b> · '):'')+f1(p.amps)+' A at '+Math.round(p.mains_v)+' V · '+(p.calibrated?'calibrated':'<a class="sublink" href="#" onclick="gotoPower();return false" title="Calibrate with a wall meter in Settings → Power &amp; calibration">estimate</a>'));}
-// Box II: the setting's wall-meter reading, or Goldshell's figure for an uncalibrated stock mode, or none
+// Box II: the setting's wall-meter reading, or the OEM's figure for an uncalibrated stock mode, or none
 function powerTileBox2(p,d,ghsNow,mk){if(!p.watts)return mk('Power','—',hesc(p.reason||'shown while hashing'));
  const ths=(ghsNow||d.ghs)/1000,jth=ths>0.01?Math.round(p.watts/ths):null;
  return mk('Power',(p.calibrated?'':'≈ ')+Math.round(p.watts)+' <span class="muted" style="font-size:12px">W</span>',
@@ -10572,7 +10570,7 @@ function renderPresets(){const ps=PR.presets||[],lk=PR.in_charge||'',tuning=lk==
  const bySlot={};ps.forEach(p=>{const sl=pSlotOf(p.name);if(sl&&!bySlot[sl])bySlot[sl]=p;});
  const others=ps.filter(p=>{const sl=pSlotOf(p.name);return !sl||bySlot[sl]!==p;});
  const card=p=>{const on=pIsOn(p),w=estW(p.mhz,p.pv),ths=pTHS(p),run=Math.floor(p.mhz/12.5)*12.5;
-  // Box II's stock modes are Goldshell's plans (Stock High is the factory setting: the Stock card folded in); the
+  // Box II's stock modes are the OEM's plans (Stock High is the factory setting: the Stock card folded in); the
   // public release has no tuner, so no tested / not-tested tag on a preset someone set
   const tested=b2Stock(p.name)?(b2Name(p.name)==='Stock High'?'The OEM’s factory setting for this miner, read from its firmware. Use it to start mining again after Idle, or to go back to the factory clock and voltage.':'The OEM’s low-power stock plan, read from the miner’s firmware.')
    :p.tested&&PUB()&&featOff2(F().Tuner)?'' // a tuner-built preset left on the config partition: no tuner here, no test tags
@@ -10624,7 +10622,7 @@ function pfOpen(p){pfKey=p?p.name:'';const ps=window._presets||[],any=ps.find(x=
 function pfSync(){if(B2T())return; // Box II: no PV; the voltage is picked in volts (pfBox2)
  if($('pfPvAuto').checked)$('pfPv').value=(+$('pfMv').value||0)+pfGap;$('pfPv').disabled=$('pfPvAuto').checked;}
 // pfBox2: on Box II the form's "mV" box becomes "Voltage", a choice of the miner's fixed voltage steps in volts
-// (b2VOpts: the value sent is Goldshell's level); the PV box and the "PV follows mV" tick are hidden. The SC
+// (b2VOpts: the value sent is the OEM's level); the PV box and the "PV follows mV" tick are hidden. The SC
 // Lite form is untouched.
 function pfBox2(){if(!B2T())return;const mv=$('pfMv');if(!mv||mv._b2)return;
  const lb=mv.parentNode;if(lb&&lb.firstChild&&lb.firstChild.nodeType===3)lb.firstChild.textContent='Voltage';

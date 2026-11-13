@@ -2,7 +2,7 @@ package main
 
 // Time zone and clock.
 //
-// Goldshell's firmware is fixed to China time (/etc/localtime = Asia/Shanghai, UTC+8), and everything on
+// The OEM's firmware is fixed to China time (/etc/localtime = Asia/Shanghai, UTC+8), and everything on
 // the miner reads it: the miner's log times, and this agent's schedule. In this firmware /etc/localtime
 // points to /usr/config/sclite/localtime, which the agent writes when a time zone is chosen (by default
 // the browser's, on first sign-in). Zone data is the IANA tz database (zoneinfo.zip, embedded, built by

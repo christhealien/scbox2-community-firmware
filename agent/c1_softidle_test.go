@@ -565,9 +565,9 @@ func TestC1PlanWritesWhileSoftIdled(t *testing.T) {
 	}
 }
 
-// Goldshell's own heat shutdown is never undone: after it (its log, or the miner's overheat flag) a wake does
+// The OEM's own heat shutdown is never undone: after it (its log, or the miner's overheat flag) a wake does
 // not re-enable the board, with SoftIdle on or when releasing a leftover with it off.
-func TestC1NeverUndoesGoldshellCutoff(t *testing.T) {
+func TestC1NeverUndoesOEMCutoff(t *testing.T) {
 	e := newC1Env(t, true)
 	if err := idleAction(model); err != nil {
 		t.Fatal(err)
@@ -579,7 +579,7 @@ func TestC1NeverUndoesGoldshellCutoff(t *testing.T) {
 	e.f.overheat = false
 	box2OverTemp = func() bool { return true }
 	if err := resumeAction(model); err == nil || !strings.Contains(err.Error(), "over-temperature") {
-		t.Fatalf("resume after Goldshell's shutdown = %v", err)
+		t.Fatalf("resume after the OEM's shutdown = %v", err)
 	}
 	box2ReleaseLeftover(time.Second)
 	if e.f.count("pgaenable") != 0 || e.f.isEnabled(0) || e.restarts != 0 {

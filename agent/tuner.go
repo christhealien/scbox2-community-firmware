@@ -118,7 +118,7 @@ func (p planMV) pvOf() int {
 }
 
 func (p planMV) text() string {
-	if tunerOnBox2() { // Goldshell's voltage level (the engine's rank converted), no PV, no mV
+	if tunerOnBox2() { // the OEM's voltage level (the engine's rank converted), no PV, no mV
 		return fmt.Sprintf("%d MHz / %s", p.MHz, box2LevelText(box2CodeOf(p.MV)))
 	}
 	return fmt.Sprintf("%d MHz / PV %d (mV %d)", p.MHz, p.PV, p.MV)
@@ -496,7 +496,7 @@ func (e *tunerEngine) recordReading(p planMV, ghs, maxT float64, totalErr, fan i
 
 func newTunerEngine(cfg tunerConfig) *tunerEngine {
 	if tunerOnBox2() {
-		cfg = box2TunerLevels(cfg) // Goldshell's levels in, ranks inside the engine (clock only while the direction is unknown)
+		cfg = box2TunerLevels(cfg) // the OEM's levels in, ranks inside the engine (clock only while the direction is unknown)
 	}
 	e := &tunerEngine{cfg: cfg, now: time.Now, sleep: time.Sleep, backendWait: 3 * time.Minute, backendGrace: 10 * time.Minute, restoreWait: 10 * time.Minute, planGen: noGen}
 	e.readErrors = readChipErrors
@@ -574,7 +574,7 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 		}
 		e.verifyPlan = func(p planMV) string { return verifyTunePlan(p.hw()) }
 		e.before = box2TunerBefore
-		e.readVolt = nil // no voltage reading to search on (PV reads 0; the floor check works in PV): "V" is Goldshell's level
+		e.readVolt = nil // no voltage reading to search on (PV reads 0; the floor check works in PV): "V" is the OEM's level
 	}
 	e.fanAt = map[int]int{}
 	e.fanCur = e.cfg.FanMinPct
@@ -679,7 +679,7 @@ func (e *tunerEngine) checkTemp() error {
 	}
 	if !ok {
 		// no temperature means no heat abort and no fan hold: don't keep testing blind
-		// (Goldshell's own over-temperature shutdown keeps working meanwhile.) A short backend drop is waited
+		// (the OEM's own over-temperature shutdown keeps working meanwhile.) A short backend drop is waited
 		// out, as long as the backend wait plus 2 minutes; then the run stops.
 		if e.noTemp == 0 {
 			e.noTempAt = e.now()
@@ -897,7 +897,7 @@ func (e *tunerEngine) fanSettleMin() float64 {
 func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool) (bool, string, tunerStats, error) {
 	prev, err := e.readErrors()
 	if err != nil {
-		// Goldshell's backend can drop out for a moment; it also fails while the mining program restarts
+		// The OEM's backend can drop out for a moment; it also fails while the mining program restarts
 		// after a crash. Wait for it rather than end the whole run on one missed reading.
 		e.log("  the miner's backend didn't answer (%v): waiting up to %g min", err, e.backendWait.Minutes())
 		for deadline := e.now().Add(e.backendWait); err != nil && e.now().Before(deadline); {
@@ -983,7 +983,7 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 		if err != nil {
 			// transient: try again next poll; but a test can't be judged without the chips, so not for ever
 			if gone := e.now().Sub(lastRead); gone >= e.backendWait {
-				// Goldshell's web backend (where the chip counts come from) can stop answering for a few
+				// The OEM's web backend (where the chip counts come from) can stop answering for a few
 				// minutes while mining carries on (seen: "stock login failed (HTTP 500)" for 3 min at the end of
 				// a 13-hour run, which then ended the presets phase). Wait a while longer; if the readings come
 				// back, this test starts over (its counts have a hole), once. Only then does the run stop.
@@ -1572,7 +1572,7 @@ func loadSavedCurve() savedCurve {
 		fLo, fHi = freqHardMin, effHard("freq", freqHardMax)
 	}
 	ok := func(p planMV) bool {
-		if tunerOnBox2() { // the clock window and Goldshell's level interval (the engine's ranks stay inside it): no PV
+		if tunerOnBox2() { // the clock window and the OEM's level interval (the engine's ranks stay inside it): no PV
 			return p.MHz >= freqMin && p.MHz <= clockWindowHi() && p.MV >= model.VCodeMin && p.MV <= model.VCodeMax
 		}
 		pv := p.pvOf()
@@ -3853,7 +3853,7 @@ func (e *tunerEngine) dropPass(mhz, mv int) {
 	}
 }
 
-// applyWait applies a plan; while Goldshell's backend doesn't answer it tries again every 15 s, for up to
+// applyWait applies a plan; while the OEM's backend doesn't answer it tries again every 15 s, for up to
 // backendWait (the run's own settings) or restoreWait (putting the miner back at the end).
 // A Stop ends the wait (the run's own settings only: the restore at the end keeps trying).
 func (e *tunerEngine) applyWait(p planMV) error {

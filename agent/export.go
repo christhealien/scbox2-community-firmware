@@ -34,16 +34,9 @@ func modelTag() string {
 	return b.String()
 }
 
-// exportBrand is the brand line that heads the saved log / tuner / report files. The existing SC Lite
-// community firmware heads them "Goldshell SC Lite", and that output must stay byte-identical (regression),
-// so the SC Lite profile keeps that exact string. Every other model uses its own neutral profile name with
-// no "Goldshell" wording (hard rule #8: the Box II port claims no Goldshell affiliation).
-func exportBrand() string {
-	if model.ID == "sclite" {
-		return "Goldshell SC Lite"
-	}
-	return model.Name
-}
+// exportBrand is the brand line that heads the saved log / tuner / report files: the model profile's
+// neutral name, never the manufacturer's (hard rule #8: the firmware claims no OEM affiliation).
+func exportBrand() string { return model.Name }
 
 // minerLabel is a filesystem-safe name for this miner, used as the run-files subfolder.
 func minerLabel() string {
@@ -121,7 +114,7 @@ func csvField(s string) string {
 func resultsCSV(b tunerBundle) []byte {
 	var sb strings.Builder
 	if tunerOnBox2() {
-		// no mV and no PV on this model: the voltage is Goldshell's voltage level (as the miner was given it) and,
+		// no mV and no PV on this model: the voltage is the OEM's voltage level (as the miner was given it) and,
 		// next to it, that level in volts (measured, or the estimate; the panel marks an estimate with ≈)
 		sb.WriteString("time,mhz,v_level,volts,result,ths,max_c,fan_pct,err_added,minutes,reason\n")
 		for _, r := range b.results {

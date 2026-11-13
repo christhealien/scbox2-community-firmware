@@ -19,7 +19,7 @@ package main
 //   - auth.json            the password hash and the cookie-signing secret and the stock miner password.
 //   - tls.key / tls.crt    the panel's TLS private key (and its cert; a fresh one is made on first start).
 //   - hashrate.json        hashrate history (data, not a setting) and the tuner run files.
-//   - pools                POOLS ARE NOT HERE. They live in Goldshell's own miner config, not the panel's,
+//   - pools                POOLS ARE NOT HERE. They live in the OEM's own miner config, not the panel's,
 //                           so they are neither exported nor restored; re-enter them on the Pools tab.
 //
 // Mirrors the private-log-export philosophy: by default export carries NO secrets. The owner opts in with

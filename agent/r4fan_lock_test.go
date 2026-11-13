@@ -114,7 +114,7 @@ func TestR4FanLockTunerRestoreRace(t *testing.T) {
 	wg.Add(1)
 	go func() { defer wg.Done(); e.Run() }()
 	time.Sleep(200 * time.Millisecond) // the run is testing
-	// the Idle request takes a moment (two HTTP calls to Goldshell's backend; seconds when it's busy)
+	// the Idle request takes a moment (two HTTP calls to the OEM's backend; seconds when it's busy)
 	var appliedAtIdle int
 	fanLockIdle = func() error {
 		s.mu.Lock()

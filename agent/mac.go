@@ -1,6 +1,6 @@
 package main
 
-// MAC address setting (Settings -> Network). /etc/sclite-mac applies it at boot, right after Goldshell's
+// MAC address setting (Settings -> Network). /etc/sclite-mac applies it at boot, right after the OEM's
 // maccfg and before eth0 comes up: keep (default: the first address seen, saved), random (new each boot) or
 // fixed (typed here). Changes apply at the next reboot.
 //

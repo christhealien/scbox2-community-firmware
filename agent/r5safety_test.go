@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// r5Stock: a fake Goldshell backend (stock 615 MHz plan at 0, idle plan at 1) that keeps what's PUT.
+// r5Stock: a fake OEM backend (stock 615 MHz plan at 0, idle plan at 1) that keeps what's PUT.
 type r5Stock struct {
 	mu      sync.Mutex
 	setting map[string]any

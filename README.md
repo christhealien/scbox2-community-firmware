@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/christhealien/scbox2-community-firmware/releases/latest"><img alt="version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-3fb950?style=flat-square"></a>
+  <a href="https://github.com/christhealien/scbox2-community-firmware/releases/latest"><img alt="version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-e3b341?style=flat-square"></a>
   <img alt="platform: SC Box II" src="https://img.shields.io/badge/platform-SC%20Box%20II-1f6feb?style=flat-square">
   <img alt="status: early release" src="https://img.shields.io/badge/status-early%20release-d29922?style=flat-square">
   <img alt="runs offline" src="https://img.shields.io/badge/runs-offline-8957e5?style=flat-square">
@@ -36,7 +36,7 @@
 </p>
 
 > [!WARNING]
-> **Early release.** The hardware controls in v0.5.0 were tested on one SC Box II. Custom firmware can void your
+> **Early release.** The hardware controls in v0.5.x were tested on one SC Box II. Custom firmware can void your
 > warranty and, in the worst case, damage the miner. Read [Safety](#safety) before you flash.
 
 ## Highlights
@@ -92,7 +92,7 @@
 
 ## Quick start
 
-1. Download `scbox2-sd-v0.5.0.img.xz` and `SHA256SUMS` from the
+1. Download `scbox2-sd-v0.5.1.img.xz` and `SHA256SUMS` from the
    [latest release](https://github.com/christhealien/scbox2-community-firmware/releases/latest) and check the hash.
 2. Write the image to a microSD card with **balenaEtcher**.
 3. Power the miner off, insert the card, power it on. Wait about 4 minutes until only the blue SYS LED flashes,
@@ -108,9 +108,9 @@ Step by step, with first sign-in and recovery: **[docs/INSTALL.md](docs/INSTALL.
 > and import them afterwards; pools, hostname and time settings aren't in the file
 > ([what's included](docs/INSTALL.md#settings-backup)).
 
-## What's in v0.5.0
+## What's in v0.5.1
 
-| Feature | v0.5.0 |
+| Feature | v0.5.1 |
 |---|:---:|
 | Monitoring, pools and pool guard, notifications, schedule, logs, SSH, time | ✅ |
 | Stop hashing / Idle, with safety guards and scheduled Idle | ✅ |
@@ -146,9 +146,9 @@ flowchart LR
 
 | Release file | What it is for |
 |---|---|
-| `scbox2-firmware-v0.5.0.ius` | Update from the panel (keep the name: the panel looks for it) |
-| `scbox2-sd-v0.5.0.img.xz` | First install, or recovery, from a microSD card |
-| `scbox2-firmware-v0.5.0-source.tar.gz` | The source: panel, build kit, docs |
+| `scbox2-firmware-v0.5.1.ius` | Update from the panel (keep the name: the panel looks for it) |
+| `scbox2-sd-v0.5.1.img.xz` | First install, or recovery, from a microSD card |
+| `scbox2-firmware-v0.5.1-source.tar.gz` | The source: panel, build kit, docs |
 | `SHA256SUMS` | SHA-256 of the files above |
 
 ## How it works
@@ -218,11 +218,12 @@ system filesystem inside it. This repository contains no stock firmware.
 # 1. the panel, public build (Go 1.24.7, from the repository root)
 mkdir -p out
 TAGS=scbox2,public kit/tools/build-agent-box2.sh agent out/scbox2-agent
+kit/tools/build-sshd-box2.sh agent out/scbox2-sshd     # the SSH server, its own program
 
 # 2. the firmware (from kit/, as root)
 cd kit
-python3 build_box2.py --firmware <stock-scbox2>.ius --agent ../out/scbox2-agent --version 0.5.0 \
-  --out out/scbox2-firmware-v0.5.0.ius --img out/scbox2-sd-v0.5.0.img --xz --sums --require-startup-check
+python3 build_box2.py --firmware <stock-scbox2>.ius --agent ../out/scbox2-agent --sshd ../out/scbox2-sshd --version 0.5.1 \
+  --out out/scbox2-firmware-v0.5.1.ius --img out/scbox2-sd-v0.5.1.img --xz --sums --require-startup-check
 ```
 
 Every build is checked (leak scan, read-back, a start-up test inside the image) and reproducible: the same inputs

@@ -34,7 +34,7 @@ func TestBox2Field4IsStock(t *testing.T) {
 	}
 }
 
-// Goldshell's backend rewrites the 690 MHz plan's info as "0.000000 V" (seen on hardware): the code comes from
+// The OEM's backend rewrites the 690 MHz plan's info as "0.000000 V" (seen on hardware): the code comes from
 // the entry's voltage field, so fan writes on that plan aren't refused as "690 MHz / 0 V".
 func TestBox2StockPlanZeroVInfo(t *testing.T) {
 	saved := model

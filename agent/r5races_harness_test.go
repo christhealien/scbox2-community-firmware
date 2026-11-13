@@ -1,7 +1,7 @@
 package main
 
 // r5-races: a concurrency stress harness for every writer of the miner's power plan and fans, and every
-// "who's in charge" check. The Goldshell backend is faked in-process (http.DefaultTransport) with random
+// "who's in charge" check. The OEM backend is faked in-process (http.DefaultTransport) with random
 // latency and random failures (a PUT may fail before it lands, or land and still answer 500, as the real
 // backend does now and then). Every PUT is checked as it lands:
 //   - PV never above 9600

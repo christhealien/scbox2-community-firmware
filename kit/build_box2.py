@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build a flashable Goldshell SC Box II firmware image with the scbox2-agent panel + hardening.
+Build a flashable SC Box II firmware image with the scbox2-agent panel + hardening.
 
     SOURCE_DATE_EPOCH=<release date> python3 build_box2.py --firmware firmware.ius --agent scbox2-agent.arm \
         --sshd scbox2-sshd.arm --version 0.5.0 --out rel/scbox2-firmware-v0.5.0.ius --img rel/scbox2-sd-v0.5.0.img \
@@ -573,12 +573,12 @@ REMOVE_GROUPS = {
     # Residual OpenSSH/telnet CLIENTS (RV3/RV6): not listeners (scp/sftp exec the now-removed ssh; telnet is a
     # plain client) so no open-port risk, but dead weight and part of "stock OpenSSH" the design drops.
     "G8_extra_clients": ["/usr/bin/scp", "/usr/bin/sftp", "/usr/bin/telnet"],
-    # Goldshell's development leftovers (security audit L10): an NFS mount of a factory server (donfs), a
+    # The OEM's development leftovers (security audit L10): an NFS mount of a factory server (donfs), a
     # screen-based miner starter, the config of a web server that isn't in the image, a factory Litecoin
     # config with someone else's pools. Nothing kept runs or reads them. /etc/random-seed: the same file on
     # every unit; each miner keeps its own seed on the config partition instead (L12, files/scbox2-seed).
     # Kept on purpose: /root/settings/key.pem and login.json (minerd's own login/JWT on 127.0.0.1:80).
-    "G9_goldshell_leftovers": ["/usr/bin/donfs", "/usr/bin/start-bfgminer.sh", "/etc/lighttpd",
+    "G9_oem_leftovers": ["/usr/bin/donfs", "/usr/bin/start-bfgminer.sh", "/etc/lighttpd",
                                "/root/settings/qomo.json", "/etc/random-seed"],
 }
 # must never be removed (R03): executables that are kept link all of these
@@ -903,12 +903,13 @@ def startup_run(root):
 
 
 # ================================================================ step 10 / --check: leak + naming gate
+# (the last two: the OEM cloud's host names, as the stock binaries spell them)
 LEAK_HOSTS = [b"114.114.114.114", b"www.baidu.com", b"www.google.com", b"202.120.2.101",
               b"202.112.31.197", b"asia.pool.ntp.org", b"hub.goldshell.com", b"find.goldshell.com"]
 
 # (path, host) pairs that are expected and safe: our own panel binary embeds 114.114.114.114 only in its DNS
 # policy code, which REFUSES that resolver (B5 netdns.go cleanDNSList / ensureSaneDNS) and never contacts it.
-# The leak gate is for Goldshell's binaries reaching out; the panel is our audited code (RV6 verifies it never
+# The leak gate is for the OEM's binaries reaching out; the panel is our audited code (RV6 verifies it never
 # connects there). Only the decompressed-tree grep sees it (the panel is inside the gzip squashfs, so the raw
 # grep can't) — so the raw grep stays strict and only this one file/host pair is exempt.
 LEAK_EXEMPT = {("/usr/bin/scbox2-agent", b"114.114.114.114")}
@@ -918,7 +919,7 @@ LEAK_EXEMPT = {("/usr/bin/scbox2-agent", b"114.114.114.114")}
 # Allowed, explicitly, with the reason:
 #   /etc/init.d/S48scbox2   at most 1 mention: the one-time settings move from /mnt/config/sclite (test builds
 #                           before v0.3.0)
-#   /usr/bin/scbox2-agent   any count: the panel's model table recognizes both miners (Goldshell-SCLITE, its
+#   /usr/bin/scbox2-agent   any count: the panel's model table recognizes both miners (the stock SC Lite model string, its
 #                           init tag), and keeps the SC Lite firmware's update channel, switched off on the SC Box II
 BRAND_OLD_RE = re.compile(rb"sc[ _\-]?lite", re.I)
 BRAND_OLD_NAME_RE = re.compile(r"sc[ _\-]?lite", re.I)
@@ -931,7 +932,7 @@ REQUIRED_SCANNED = ("/usr/bin/scbox2-sshd", "/etc/init.d/S47scbox2-sshd")
 
 
 def check_image(path, require=()):
-    """The release gate DESIGN requires: no Chinese-host / Goldshell-cloud / leaking-NTP string anywhere in
+    """The release gate DESIGN requires: no Chinese-host / OEM-cloud / leaking-NTP string anywhere in
     what the device would actually run, and nothing named after the SC Lite. Works on a .ius or an SD .img.
     The system squashfs is gzip-compressed, so a raw byte grep of the image is a FALSE NEGATIVE (it can't see
     strings inside the compressed binaries). So this:

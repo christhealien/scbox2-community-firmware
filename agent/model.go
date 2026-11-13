@@ -1,7 +1,7 @@
 package main
 
 // Model profile (R14 — the SC Box II port foundation). Every hardware-specific figure the panel uses comes
-// from here, picked once at start from Goldshell's own identity files and cross-checked against
+// from here, picked once at start from the OEM's own identity files and cross-checked against
 // /root/product.json. A miner that matches no known profile, or whose product.json disagrees with its
 // profile, gets the "unknown" profile: monitoring only, every write feature off.
 //
@@ -49,7 +49,7 @@ type modelFeatures struct {
 
 	// SoftIdle (lane B3): the safety guards may stop hashing through the miner API (pgadisable per board)
 	// on a model with no stock idle plan. UNPROVEN on the SC Box II — DEFAULTS OFF (conservative): the guards
-	// then rely on Goldshell's 86 °C hardware cut-off (the guaranteed backstop) and drive fans to 100 %. A
+	// then rely on the OEM's 86 °C hardware cut-off (the guaranteed backstop) and drive fans to 100 %. A
 	// hardware test (T1 Gate B) that confirms pgadisable safely stops hashing is what lets this be turned on.
 	// Irrelevant on SC Lite, which parks via its own stock idle plan (applyIdle) regardless of this gate.
 	SoftIdle bool
@@ -76,7 +76,7 @@ type modelProfile struct {
 	FanGroups      [][]int // fans sharing one PWM signal
 	FanStockMaxRPM int
 
-	// thermal, all in °C. The cut-off is Goldshell fanctrl's own shutdown (product.json tempcutoff) and is
+	// thermal, all in °C. The cut-off is the OEM fanctrl's own shutdown (product.json tempcutoff) and is
 	// never raised. The panel guards are derived: heat-guard = cutoff-4, abort-max = cutoff-2.
 	TempCutoffC  float64
 	HeatGuardC   float64 // "never lower the fans below here"            (cutoff-4)
@@ -111,7 +111,7 @@ type modelProfile struct {
 }
 
 var profSCLite = modelProfile{
-	ID: "sclite", Name: "SC Lite", StockModel: "Goldshell-SCLITE", MCB: "MCB_V4_3", InitLogTag: "SCLITE",
+	ID: "sclite", Name: "SC Lite", StockModel: stockModelSCLite, MCB: "MCB_V4_3", InitLogTag: "SCLITE",
 	Boards: 4, ChipsPerBoard: 46, ChipModel: "ICC590", StagePairs: true,
 	Fans: 4, FanGroups: [][]int{{0, 1}, {2, 3}}, FanStockMaxRPM: 2200,
 	TempCutoffC: 92, HeatGuardC: 88, AbortMaxC: 90, AbortDefC: 88, ThrottleDefC: 90, ResumeDefC: 80, TargetC: 75,
@@ -129,7 +129,7 @@ var profSCLite = modelProfile{
 // strings). Clock window = the stock plans only (525 / 690 MHz); every control feature stays off until
 // measured on real hardware. Cut-off 86 (never raised); heat-guard 82 (-4); abort-max 84 (-2); target 77.
 var profSCBox2 = modelProfile{
-	ID: "scbox2", Name: "SC Box II", StockModel: "Goldshell-SCBoxⅡ", MCB: "MCB_V6_3_5", InitLogTag: "SCBOX2",
+	ID: "scbox2", Name: "SC Box II", StockModel: stockModelSCBox2, MCB: "MCB_V6_3_5", InitLogTag: "SCBOX2",
 	Boards: 1, ChipsPerBoard: 36, ChipModel: "ICT580", StagePairs: true,
 	Fans: 2, FanGroups: [][]int{{0, 1}}, FanStockMaxRPM: 4500,
 	TempCutoffC: 86, HeatGuardC: 82, AbortMaxC: 84, AbortDefC: 82, ThrottleDefC: 82, ResumeDefC: 75, TargetC: 77,
@@ -142,7 +142,7 @@ var profSCBox2 = modelProfile{
 	OCHardMax: box2OCHardMax,
 	Box2Plans: []box2Tuple{{FreqMHz: 690, V: 42}, {FreqMHz: 525, V: 61}},
 	Feat:      modelFeatures{}, // every control feature OFF
-	// the voltage LEVELS (Goldshell's code, not millivolts; there is no PV) the tuner may write: the stock levels'
+	// the voltage LEVELS (the OEM's code, not millivolts; there is no PV) the tuner may write: the stock levels'
 	// closed interval, 42 = stock Hashrate = the highest voltage the panel ever sets. Direction MEASURED (C4, at
 	// the power lugs under load): a higher level is a LOWER voltage — 42 = 7.67 V, 43 = 7.61, 44 = 7.58,
 	// 45 = 7.55, 46 = 7.52, 61 = 7.03 (about 33.5 mV a level).
@@ -166,6 +166,45 @@ var profUnknown = modelProfile{
 // setWindowsFromModel to apply the loaded profile. modelWhy records why the profile was chosen.
 var model = profSCLite
 var modelWhy = "default (SC Lite); loadModel not called"
+
+// The "model" strings the stock firmware writes in /root/product.json. They carry the OEM's name, so they
+// are kept verbatim only to recognise the miner (loadModel); people see stockModelLabel's neutral form.
+const (
+	stockModelSCLite = "Goldshell-SCLITE"
+	stockModelSCBox2 = "Goldshell-SCBoxⅡ"
+)
+
+// stockVendorPrefix: the manufacturer prefix the stock model strings start with ("…-").
+var stockVendorPrefix = stockModelSCLite[:strings.IndexByte(stockModelSCLite, '-')+1]
+
+// stockModelLabel: a product.json "model" value as people read it (the why of the model choice, the
+// system log): a known model by its profile name, any other with the manufacturer prefix taken off.
+func stockModelLabel(raw string) string {
+	switch raw {
+	case stockModelSCLite:
+		return profSCLite.Name
+	case stockModelSCBox2:
+		return profSCBox2.Name
+	}
+	if n := len(stockVendorPrefix); len(raw) > n && strings.EqualFold(raw[:n], stockVendorPrefix) {
+		return raw[n:]
+	}
+	return raw
+}
+
+// oemNameRe: the manufacturer's name as the stock programs write it in their logs, in any case (built from
+// the stock model string, so it is spelled out once).
+var oemNameRe = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(strings.TrimSuffix(stockVendorPrefix, "-")))
+
+// stockTextShown: text from the stock programs (their logs, streamed or exported) as the panel hands it to
+// people: the manufacturer's name reads "OEM" ("OEM-sb2 Miner detected"). Code that parses those logs
+// reads them raw.
+func stockTextShown(s string) string {
+	if !oemNameRe.MatchString(s) {
+		return s
+	}
+	return oemNameRe.ReplaceAllString(s, oemName())
+}
 
 type productFile struct {
 	Model string `json:"model"`
@@ -193,30 +232,31 @@ func loadModel(product []byte, mcb string) (modelProfile, string) {
 		return profUnknown, "product.json unreadable: " + err.Error()
 	}
 	mcb = strings.TrimSpace(mcb)
+	shown := stockModelLabel(pf.Model) // what the why says: never the raw string with the OEM's name
 	for _, p := range []modelProfile{profSCLite, profSCBox2} {
 		if pf.Model != p.StockModel {
 			continue
 		}
 		if mcb != p.MCB {
-			return profUnknown, fmt.Sprintf("model %q but control board %q (profile made for %q)", pf.Model, mcb, p.MCB)
+			return profUnknown, fmt.Sprintf("model %q but control board %q (profile made for %q)", shown, mcb, p.MCB)
 		}
 		if len(pf.Cpbs) != p.Boards || len(pf.Fans) != p.Fans || pf.TempCutoff != p.TempCutoffC {
 			return profUnknown, fmt.Sprintf("model %q: product.json has %d boards, %d fans, cutoff %.0f; profile %d/%d/%.0f",
-				pf.Model, len(pf.Cpbs), len(pf.Fans), pf.TempCutoff, p.Boards, p.Fans, p.TempCutoffC)
+				shown, len(pf.Cpbs), len(pf.Fans), pf.TempCutoff, p.Boards, p.Fans, p.TempCutoffC)
 		}
 		for _, c := range pf.Cpbs {
 			if c.Chips.Cnt != p.ChipsPerBoard || c.Chips.Model != p.ChipModel || len(c.Chips.Layout)*2 != p.ChipsPerBoard {
-				return profUnknown, fmt.Sprintf("model %q: board chips %s x%d, profile %s x%d", pf.Model, c.Chips.Model, c.Chips.Cnt, p.ChipModel, p.ChipsPerBoard)
+				return profUnknown, fmt.Sprintf("model %q: board chips %s x%d, profile %s x%d", shown, c.Chips.Model, c.Chips.Cnt, p.ChipModel, p.ChipsPerBoard)
 			}
 		}
 		for _, f := range pf.Fans {
 			if f.MaxRPM > p.FanStockMaxRPM {
-				return profUnknown, fmt.Sprintf("model %q: fan maxrpm %d over the profile's %d", pf.Model, f.MaxRPM, p.FanStockMaxRPM)
+				return profUnknown, fmt.Sprintf("model %q: fan maxrpm %d over the profile's %d", shown, f.MaxRPM, p.FanStockMaxRPM)
 			}
 		}
 		return p, "matched " + p.ID
 	}
-	return profUnknown, fmt.Sprintf("unknown model %q", pf.Model)
+	return profUnknown, fmt.Sprintf("unknown model %q", shown)
 }
 
 func loadModelFiles(productPath, mcbPath string) (modelProfile, string) {
@@ -380,7 +420,7 @@ type box2Mode struct {
 	Fan1, Fan2 int
 }
 
-// box2StockHigh / box2StockLow: what a person sees for Goldshell's two stock modes on the SC Box II. The keys
+// box2StockHigh / box2StockLow: what a person sees for the OEM's two stock modes on the SC Box II. The keys
 // stay box2ModeName's ("Hashrate" / "Low-power"): the API, the schedule's saved rules and the charge ("preset:Hashrate")
 // keep them; only the texts change (presetLabel; the page's b2Name does the same).
 const (
@@ -663,10 +703,8 @@ func handleModel(w http.ResponseWriter, r *http.Request) {
 	if sig := commissionSig(); sig != "" { // only on a model with features to commission: the SC Lite's reply is unchanged
 		m["commission"] = sig
 	}
-	if !oemIsLite() { // the SC Box II never names the miner's manufacturer (the page's OEM()); the SC Lite's reply is unchanged
-		m["oem"] = oemName()
-	}
-	if publicBuild { // the public release: the page shows no Commissioning section and no banner
+	m["oem"] = oemName() // the miner's manufacturer as the page names it (its OEM()): never by name
+	if publicBuild {     // the public release: the page shows no Commissioning section and no banner
 		m["public"] = true
 	}
 	if model.Plan == planBox2V && model.Feat.SoftIdle {

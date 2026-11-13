@@ -1,7 +1,7 @@
 package main
 
 // L15-ceiling: the firmware-limit probe and the clock window. The fake stock backend stores every plan verbatim
-// (as Goldshell's firmware does: it caps nothing), so any "clamp" the probe reports is not the firmware's.
+// (as the OEM's firmware does: it caps nothing), so any "clamp" the probe reports is not the firmware's.
 
 import (
 	"encoding/json"
@@ -124,7 +124,7 @@ func l15UICaps(s ceilingState) map[string]int {
 }
 
 // 1. Probe again after "Tighten": the panel's own window (the recorded cap) refuses every step past it, and the
-// probe reports that as Goldshell's firmware rejecting the value.
+// probe reports that as the OEM's firmware rejecting the value.
 func TestL15ReprobeAfterTightenBlamesFirmware(t *testing.T) {
 	s := l15Setup(t)
 	if err := saveOverclock(overclockState{Acknowledged: true, At: "x", Caps: map[string]int{"freq": 800}}); err != nil {
@@ -177,7 +177,7 @@ func TestL15RelockDuringProbeLeavesUnlockAt700(t *testing.T) {
 }
 
 // 3. The stock backend drops the connection for one step (it may be restarting after the last plan change): the
-// probe's 3 quick tries fail and it records Goldshell's cap just below that step.
+// probe's 3 quick tries fail and it records the OEM's cap just below that step.
 func TestL15TransientBackendErrorIsNoCap(t *testing.T) {
 	s := l15Setup(t)
 	saveOverclock(overclockState{Acknowledged: true, At: "x"})
@@ -194,7 +194,7 @@ func TestL15TransientBackendErrorIsNoCap(t *testing.T) {
 	}
 	st := l15WaitProbe(t)
 	if caps := l15UICaps(st); len(caps) > 0 {
-		t.Fatalf("BUG: a backend that didn't answer for ~2 s is recorded as Goldshell's cap: Tighten would set %v (note %q)", caps, st.Axes[0].Note)
+		t.Fatalf("BUG: a backend that didn't answer for ~2 s is recorded as the OEM's cap: Tighten would set %v (note %q)", caps, st.Axes[0].Note)
 	}
 }
 

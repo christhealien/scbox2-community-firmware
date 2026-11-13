@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""All binary edits for the Goldshell SC Box II intminer (stock fw 2.2.1 /usr/bin/intminer, BFGMiner 5.4.2 +
-Goldshell "gsscbox2" driver, ICT580; md5 be17560d5fc8caca6691e66b596ce8cb /
+"""All binary edits for SC Box II intminer (stock fw 2.2.1 /usr/bin/intminer, BFGMiner 5.4.2 +
+the OEM "gsscbox2" driver, ICT580; md5 be17560d5fc8caca6691e66b596ce8cb /
 sha256 8badec162b9a55721479a0c9cb7f305e1be34fffd4da64b213d5c15b8a29eb2f). This is the Box II equivalent of the
 SC Lite kit's patch_intminer.py + patch_divzero.py + patch_poolinput.py, consolidated into one module. The
 three groups share the binary's dead code without overlapping; every original byte is checked and the stock

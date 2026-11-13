@@ -1,4 +1,4 @@
-# Goldshell SC Lite — tuner run
+# SC Lite — tuner run
 # miner: SCLite-1
 # started: 2026-11-05 01:53:12
 # mode: map · baseline stock · range 550–700 MHz step 25 · PV 9100–9600 step 50

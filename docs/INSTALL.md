@@ -14,7 +14,7 @@ burn procedure works. After the first install, update from the panel.
 - A **microSD card** of any size: the image is about 30 MiB. The card is only needed for the flash.
 - **balenaEtcher** to write the image.
 - From the [latest release](https://github.com/christhealien/scbox2-community-firmware/releases/latest):
-  `scbox2-sd-v0.5.0.img.xz` and `SHA256SUMS`.
+  `scbox2-sd-v0.5.1.img.xz` and `SHA256SUMS`.
 - An **Ethernet** connection for the miner. The board has no Wi-Fi chip.
 - A copy of **the stock SC Box II image**, kept safe, so you can go back to stock later.
 - The **stock fans** fitted. The OEM fan control is calibrated for them.
@@ -31,14 +31,14 @@ Check the image against `SHA256SUMS`:
 | System | Command |
 |---|---|
 | Linux | `sha256sum -c SHA256SUMS --ignore-missing` (must say `OK`) |
-| macOS | `shasum -a 256 scbox2-sd-v0.5.0.img.xz`, then compare with its line in `SHA256SUMS` |
-| Windows | `certutil -hashfile scbox2-sd-v0.5.0.img.xz SHA256`, then compare |
+| macOS | `shasum -a 256 scbox2-sd-v0.5.1.img.xz`, then compare with its line in `SHA256SUMS` |
+| Windows | `certutil -hashfile scbox2-sd-v0.5.1.img.xz SHA256`, then compare |
 
 If it doesn't match, download it again. Never flash an image that fails the check.
 
 ## 2. Write the card
 
-Open **balenaEtcher**, select `scbox2-sd-v0.5.0.img.xz` (Etcher unpacks it; other tools need `xz -dk` or 7-Zip
+Open **balenaEtcher**, select `scbox2-sd-v0.5.1.img.xz` (Etcher unpacks it; other tools need `xz -dk` or 7-Zip
 first), select the microSD card, and click **Flash**.
 
 ## 3. Burn it onto the miner

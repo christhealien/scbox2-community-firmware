@@ -1,7 +1,7 @@
 package main
 
 // Pool guard: the miner mines only the pools entered in the Pools tab. Every 30 s the pools the miner is
-// actually using (its API) are compared with the Pools tab's list (Goldshell's minerd, which writes the
+// actually using (its API) are compared with the Pools tab's list (the OEM's minerd, which writes the
 // miner's config). A pool, or a pool account, that isn't in the list and is still there a check later is
 // disabled and removed from the running miner, logged and notified. If it can't be removed, mining is put
 // in Idle: the miner never hashes for a place the owner didn't choose.
@@ -83,7 +83,7 @@ func poolGuardCheck() {
 	if len(list) == 0 && pgSavedHasPools() {
 		return // reads empty while minerd restarts (its saved list still has pools): nothing to compare with
 	}
-	// for the private log export: the pools (also those set on Goldshell's own page) and this miner's name,
+	// for the private log export: the pools (also those set on the OEM's own page) and this miner's name,
 	// remembered for after they change (written only when something is new)
 	if h, err := os.Hostname(); err == nil {
 		rememberPrivate(append(poolListTokens(list), h, minerLabel()))
@@ -146,7 +146,7 @@ func poolGuardCheck() {
 		}
 		k := poolKey(p.URL, p.User)
 		host := strings.SplitN(k, "|", 2)[0]
-		if allowed[k] || host == "" || host == "benchmark" { // benchmark: Goldshell's no-pool placeholder, offline
+		if allowed[k] || host == "" || host == "benchmark" { // benchmark: the OEM's no-pool placeholder, offline
 			continue
 		}
 		seen[k] = true
@@ -211,7 +211,7 @@ func poolGuardCheck() {
 }
 
 // pgSavedHasPools: minerd's saved pool list (where the Pools tab's changes end up) has a pool with an address
-// other than Goldshell's offline placeholder. Unreadable or in a shape not understood: true (the guard then
+// other than the OEM's offline placeholder. Unreadable or in a shape not understood: true (the guard then
 // doesn't treat an empty answer from minerd as the owner's list).
 func pgSavedHasPools() bool {
 	b, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(*bfgPath)), "minerd/settings/pools.json"))
@@ -387,7 +387,7 @@ func urlHost(u string) string {
 	return strings.Trim(u, "[]")
 }
 
-// pgRestartMiner: the mining program is restarted (Goldshell's watchdog starts it again, on the configured pools).
+// pgRestartMiner: the mining program is restarted (the OEM's watchdog starts it again, on the configured pools).
 var pgRestartMiner = func() error {
 	cmd := exec.Command("sh", "-c", "killall intminer")
 	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))

@@ -328,7 +328,7 @@ func tunerRecover(wait time.Duration) {
 	if m.Plan == ceilMarkerPlan {
 		what = "limit probe"
 	}
-	// a setting of the record as the owner reads it: the limit probe's record holds Goldshell's level as the miner
+	// a setting of the record as the owner reads it: the limit probe's record holds the OEM's level as the miner
 	// was given it, the tuner's its own rank (text() converts that one)
 	markText := func(p planMV) string {
 		if tunerOnBox2() && m.Plan == ceilMarkerPlan {
@@ -375,7 +375,7 @@ func tunerRecover(wait time.Duration) {
 				// run's last test setting (the owner may have chosen Stock, a preset or Idle since)
 				cur, ok := readStockBaselineNow("current")
 				same := m.Testing != nil && cur.FreqMHz == m.Testing.MHz && cur.PVMv == m.Testing.PV
-				if tunerOnBox2() && m.Testing != nil && m.Plan != ceilMarkerPlan { // no PV there: Goldshell's level
+				if tunerOnBox2() && m.Testing != nil && m.Plan != ceilMarkerPlan { // no PV there: the OEM's level
 					same = cur.FreqMHz == m.Testing.MHz && cur.VrunMv == m.Testing.hw().MV
 				}
 				if ok && !same {

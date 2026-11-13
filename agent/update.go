@@ -6,7 +6,7 @@ package main
 //
 // A package is a gzipped tar: manifest.json first, then files/<path> for every file it installs. The
 // manifest lists each file's sha256 and size, the stock paths a build removes, and a base check (the
-// stock Goldshell miner kept at /usr/libexec/sclite/intminer by every sclite build), so a damaged file or
+// stock OEM miner kept at /usr/libexec/sclite/intminer by every sclite build), so a damaged file or
 // one for a different miner is refused before anything changes. Packages aren't signed: anyone can build
 // and install their own.
 //
@@ -669,7 +669,7 @@ func writeLast(result, from, to, note string) {
 	os.WriteFile(filepath.Join(updDir(), "last.json"), b, 0o644)
 }
 
-// rootRW: the system partition is mounted read-only (Goldshell's inittab remounts / ro at boot); make it
+// rootRW: the system partition is mounted read-only (the OEM's inittab remounts / ro at boot); make it
 // writable for an install or a roll back, and read-only again after. Only for the real root.
 func rootRW() (done func(), err error) {
 	if updateRoot != "/" {

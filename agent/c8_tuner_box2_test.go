@@ -8,7 +8,7 @@ package main
 //   - every write is a whole clock on the measured 12.5 MHz PLL grid inside the window, and a voltage level
 //     inside [42, 61] (box2TunerWriteErr checked on every fake write); never a PV or millivolts;
 //   - the defaults are Box II data (525–690 MHz in 12.5 MHz steps, levels, the profile's thermal limits, the
-//     fans left to Goldshell), the texts show Goldshell's level with the measured C4 volts, never PV/mV/watts;
+//     fans left to the OEM fan control), the texts show the OEM's level with the measured C4 volts, never PV/mV/watts;
 //   - the thermal guard (abort ≤ 84, from the profile) and the hardware-error judge stop/fail settings, and
 //     the run always ends on the stock Hashrate plan or on the best setting that passed its confirm;
 //   - with a direction set (as the C4 result would), voltage steps walk codes from the least-voltage end;
@@ -249,7 +249,7 @@ func TestC8Box2ClockOnlyRun(t *testing.T) {
 	}
 	logs := c8Logs(e)
 	if !strings.Contains(logs, "7.67 V") || strings.Contains(logs, "level 42") || strings.Contains(logs, "PV ") || strings.Contains(logs, " mV") || strings.Contains(logs, "V-code") {
-		t.Fatalf("the log must speak volts, not Goldshell's levels, PV or mV:\n%s", logs)
+		t.Fatalf("the log must speak volts, not the OEM's levels, PV or mV:\n%s", logs)
 	}
 	sv := e.statusView()
 	if b, _ := sv["best"].(*planMV); b == nil || b.MV != 42 || b.PV != 0 {
@@ -427,7 +427,7 @@ func TestC8Box2WriteGuard(t *testing.T) {
 	}
 }
 
-// the texts: Goldshell's level with the C4 volts where measured, nothing made up elsewhere; no PV, mV or watts
+// the texts: the OEM's level with the C4 volts where measured, nothing made up elsewhere; no PV, mV or watts
 func TestC8Box2LevelTexts(t *testing.T) {
 	b10TempAuth(t)
 	c8Box2(t, true, vcodeUpIsLess)

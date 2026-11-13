@@ -298,7 +298,7 @@ func TestTunerPVFloorValidation(t *testing.T) {
 	}
 }
 
-// Goldshell's backend didn't answer once, right after a setting settled: the run waited for it instead of
+// The OEM's backend didn't answer once, right after a setting settled: the run waited for it instead of
 // ending (a real run aborted on one missed reading and then couldn't put the miner back).
 func TestBackendDropIsWaitedFor(t *testing.T) {
 	cfg := mapCfg()
@@ -316,7 +316,7 @@ func TestBackendDropIsWaitedFor(t *testing.T) {
 	e.readErrors = func() (map[ckey]int, error) {
 		if down > 0 {
 			down--
-			return nil, fmt.Errorf("the miner's backend (Goldshell's minerd) didn't answer: it may be restarting")
+			return nil, fmt.Errorf("the miner's backend (the OEM's minerd) didn't answer: it may be restarting")
 		}
 		return read()
 	}
@@ -348,7 +348,7 @@ func TestCrashAtSettingFailsIt(t *testing.T) {
 	e.readErrors = func() (map[ckey]int, error) {
 		if down > 0 {
 			down--
-			return nil, fmt.Errorf("the miner's backend (Goldshell's minerd) didn't answer: x")
+			return nil, fmt.Errorf("the miner's backend (the OEM's minerd) didn't answer: x")
 		}
 		return read()
 	}
@@ -384,7 +384,7 @@ func TestRestoreRetried(t *testing.T) {
 	e.applyPlan = func(p planMV) error {
 		if e.aborted() && fails < 3 {
 			fails++
-			return fmt.Errorf("the miner's backend (Goldshell's minerd) didn't answer: x")
+			return fmt.Errorf("the miner's backend (the OEM's minerd) didn't answer: x")
 		}
 		if p.MHz == 575 && p.MV == 9000 {
 			hot = true

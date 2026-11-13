@@ -948,7 +948,7 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 func schedulePresets() []map[string]any {
 	if model.Plan == planBox2V {
 		out := []map[string]any{}
-		// "mv" carries Goldshell's voltage LEVEL here (not millivolts; no PV), kept for the page; "level" says so
+		// "mv" carries the OEM's voltage LEVEL here (not millivolts; no PV), kept for the page; "level" says so
 		for _, m := range box2Modes() {
 			out = append(out, map[string]any{"key": m.Name, "label": presetLabel(m.Name), "mhz": m.Freq, "mv": m.V, "level": m.V, "stock": true})
 		}

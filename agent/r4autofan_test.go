@@ -1,7 +1,7 @@
 package main
 
 // r4-autofan: the Auto fan panel's loop (fanTick = one pass of fanLoop), its throttle tier and its writes,
-// against a fake Goldshell backend (/mcb/setting) and a fake dashboard.
+// against a fake OEM backend (/mcb/setting) and a fake dashboard.
 
 import (
 	"encoding/json"

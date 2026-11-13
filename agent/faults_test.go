@@ -427,7 +427,7 @@ func TestFaultEverythingFails(t *testing.T) {
 	cfg := mapCfg()
 	cfg.ChipTrim = true
 	e, s := newSimEngine(cfg, 8900, ckey{2, 5})
-	bad := fmt.Errorf("the miner's backend (Goldshell's minerd) didn't answer: x")
+	bad := fmt.Errorf("the miner's backend (the OEM's minerd) didn't answer: x")
 	e.readErrors = func() (map[ckey]int, error) { return nil, bad }
 	e.readTemp = func() (float64, bool) { return 0, false }
 	e.readGHS = func() (float64, bool) { return 0, false }

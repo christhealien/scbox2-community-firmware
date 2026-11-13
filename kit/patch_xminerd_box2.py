@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch Goldshell SC Box II xminerd (stock 2.2.1 rootfs /usr/bin/xminerd, md5 0ebc19f06cc9d91322109c9a462f5d54):
+"""Patch SC Box II xminerd (stock 2.2.1 rootfs /usr/bin/xminerd, md5 0ebc19f06cc9d91322109c9a462f5d54):
 the fan check's "learned RPM" record (p1) and the net check (127.0.0.2:80 first, no outside hosts).
 
 usage: patch_xminerd_box2.py <in> <out>

@@ -6,16 +6,16 @@ package main
 // and writing fan1's level moved fan0 with it. Four separate speeds aren't possible; two pairs are.
 //
 // Everything that sets the fans (the panel's curve, Controls, presets and the tuner through the power
-// plan; intminer, which gives all four fans the plan's one value; Goldshell's fanctrl, which steps each
+// plan; intminer, which gives all four fans the plan's one value; the OEM's fanctrl, which steps each
 // fan from its own current level) keeps setting pair A as before. This loop then keeps pair B at
 // pair A + offset, so a fan curve, a preset or a tuning run all work as they do, with pair B offset.
 // The point is noise: fans at nearly the same speed beat against each other (a slow "wow-wow"); a clear
 // offset between the pairs pushes that beat out of the annoying range.
 //
 // Safety: pair B never goes under the panel's fan floor (fanguard.go); when pair A is at 95 % or more
-// (Goldshell's over-temperature 100 %, or anyone's emergency), a negative offset isn't applied; on Idle
-// and while mining is locked after a fan problem the fans are left to Goldshell. Both fans of a pair
-// always get the same level, so Goldshell's fan check sees each fan's real duty.
+// (the OEM's over-temperature 100 %, or anyone's emergency), a negative offset isn't applied; on Idle
+// and while mining is locked after a fan problem the fans are left to the OEM fan control. Both fans of a pair
+// always get the same level, so the OEM's fan check sees each fan's real duty.
 
 import (
 	"encoding/json"
@@ -145,7 +145,7 @@ func fanPairTick(off int, skip string) string {
 	if skip != "" {
 		return skip
 	}
-	a := lv[1] // the last of the pair written by Goldshell's programs, so what the pair actually runs at
+	a := lv[1] // the last of the pair written by the OEM's programs, so what the pair actually runs at
 	// (clamped as setFanLvl writes it, so the check below and the note see the level really written)
 	b := clampInt(fanPairTarget(a, off, pairFloor()), fanFloor(), 100)
 	// a board at 88 °C or more: pair B isn't held back, and never turned down
@@ -208,7 +208,7 @@ func fanPairSkip() string {
 		return "left to " + oemFanCtl() + " while mining is locked after a fan problem"
 	}
 	if fanTestRunning() {
-		// Goldshell's start-up fan test records each fan's speed at each level: an offset now would make
+		// The OEM's start-up fan test records each fan's speed at each level: an offset now would make
 		// it record fans 2+3 at the wrong level (and later flag or pass them wrongly)
 		return "left to " + oemFanCtl() + " during its start-up fan test"
 	}

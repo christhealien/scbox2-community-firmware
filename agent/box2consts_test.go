@@ -1,6 +1,6 @@
 package main
 
-// Box II constants groom: nothing the SC Box II uses comes from the SC Lite. The voltage is Goldshell's level
+// Box II constants groom: nothing the SC Box II uses comes from the SC Lite. The voltage is the OEM's level
 // (42–61, a higher level is a lower voltage), there is no PV, the overclock ceiling is undecided (C6/C7 refuse
 // above 690 MHz), and with C2 off no Box II path reports watts or J/TH.
 

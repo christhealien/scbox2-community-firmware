@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// r6-security: a failed sign-in to Goldshell's backend must not carry the stock web password into an error
+// r6-security: a failed sign-in to the OEM's backend must not carry the stock web password into an error
 // text (the tuner log, the activity feed, the page). The password goes in the login URL's query, encrypted
 // with a fixed, public key (encStockPw), i.e. readable by anyone; Go's *url.Error prints that whole URL.
 func TestR6StockLoginErrorHasNoPassword(t *testing.T) {

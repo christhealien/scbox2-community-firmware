@@ -1,6 +1,6 @@
 package main
 
-// C6/C7 (commissioning): the SC Box II clock-ceiling probe and the overclock unlock. A fake Goldshell backend
+// C6/C7 (commissioning): the SC Box II clock-ceiling probe and the overclock unlock. A fake OEM backend
 // (/mcb/setting) and a fake miner (the probe's readings) whose temperature, HW errors and chip health follow
 // the clock the probe set. The fake clock backend stands in for lane C3's: it writes any clock up to
 // clockWindowHi() and calls box2OverclockErr, the contract ceilingbox2.go documents.

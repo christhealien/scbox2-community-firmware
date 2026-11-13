@@ -3,7 +3,7 @@ package main
 // Lane B2 — thermal guard & heat limits for the SC Box II port.
 //
 // Proves:
-//  1. On the SC Box II profile every thermal threshold the guard uses is < Goldshell's 86 °C cut-off and
+//  1. On the SC Box II profile every thermal threshold the guard uses is < the OEM's 86 °C cut-off and
 //     matches the profile (so the guards actually act, unlike the old hard-coded 88/90 which sat ABOVE the
 //     Box II cut-off = dead code).
 //  2. The SC Lite profile reproduces the exact pre-port constants (88 / 90 / 80), so SC Lite is unchanged.

@@ -7,7 +7,7 @@ import (
 )
 
 // The public release's page (PUB() true: /api/model says "public") shows nothing of the owner's per-unit
-// commissioning or its tests, and the SC Box II names Goldshell's two stock plans "Stock High" (690 MHz, also the
+// commissioning or its tests, and the SC Box II names the OEM's two stock plans "Stock High" (690 MHz, also the
 // factory "Stock") and "Stock Low" (525 MHz) in both builds. The SC Lite page is unchanged. The page's own
 // functions run in node (l31Node), as in groom_box2_ui_test.go.
 
@@ -149,7 +149,7 @@ CTRL=box2Ctrl(true);CTRL.in_charge='preset Hashrate';renderControl(CTRL);console
 			}
 		}
 		if txt := pubText(out); strings.Contains(txt, "Hashrate") || strings.Contains(txt, "Low-power") {
-			t.Errorf("Box II Controls (public %v) show Goldshell's mode names:\n%s", pub, out)
+			t.Errorf("Box II Controls (public %v) show the OEM's mode names:\n%s", pub, out)
 		}
 	}
 }
@@ -230,7 +230,7 @@ for(const k in V)console.log('V_'+k+' '+String(V[k]).replace(/\n/g,' '));`)
 		}
 		pubCheckClean(t, v, views[v])
 		if txt := pubText(views[v]); strings.Contains(txt, "Hashrate") || strings.Contains(txt, "Low-power") { // (not the keys in onclick)
-			t.Errorf("public %s shows Goldshell's mode names: %s", v, views[v])
+			t.Errorf("public %s shows the OEM's mode names: %s", v, views[v])
 		}
 	}
 	if views["banner"] != " hidden=true" || !strings.HasSuffix(views["settings"], "hidden=true") {

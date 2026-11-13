@@ -1,6 +1,6 @@
 package main
 
-// L12-fans (sweep22): fan curve vs Goldshell's start-up fan test, and the watchdog fan guard with a fan pair
+// L12-fans (sweep22): fan curve vs the OEM's start-up fan test, and the watchdog fan guard with a fan pair
 // offset (fans 2+3 run at another level than fans 0+1).
 
 import (
@@ -45,7 +45,7 @@ func TestL12FanGuardNegativeOffsetFlagOnPairA(t *testing.T) {
 	}
 }
 
-// Goldshell's start-up fan test (xminerd's first 90 s, or a re-run) records each fan's speed at each level:
+// The OEM's start-up fan test (xminerd's first 90 s, or a re-run) records each fan's speed at each level:
 // the fan curve must not write a fan level meanwhile (as the pair offset already doesn't). Its 100 % for
 // heat still goes through.
 func TestL12CurveWaitsForFanTest(t *testing.T) {
@@ -58,7 +58,7 @@ func TestL12CurveWaitsForFanTest(t *testing.T) {
 	m.tick(c, 10*time.Second)
 	m.tick(c, 50*time.Second) // past the cooldown too
 	if n := m.count("plan"); n != 0 {
-		t.Fatalf("the fan curve wrote %d fan plan(s) during Goldshell's start-up fan test: %+v", n, m.putsCopy())
+		t.Fatalf("the fan curve wrote %d fan plan(s) during the OEM's start-up fan test: %+v", n, m.putsCopy())
 	}
 	fanMu.RLock()
 	note, tgt := fanSt.Note, fanSt.Target

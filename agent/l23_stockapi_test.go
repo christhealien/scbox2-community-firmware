@@ -1,6 +1,6 @@
 package main
 
-// L23-stockapi: the panel's client for Goldshell's stock web backend (minerd on 127.0.0.1:80).
+// L23-stockapi: the panel's client for the OEM's stock web backend (minerd on 127.0.0.1:80).
 
 import (
 	"bytes"

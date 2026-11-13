@@ -119,7 +119,7 @@ func ceilTooHot() (float64, bool) {
 }
 
 // ceilApply writes a plan, retrying a few times so a transient API hiccup is not mistaken for a
-// firmware rejection. ok: written. refused: Goldshell's backend answered the write and turned it down (the
+// firmware rejection. ok: written. refused: the OEM's backend answered the write and turned it down (the
 // only failure that says something about its cap); any other failure (no answer, the panel's own window or
 // holds) is no result.
 func ceilApply(p powerplan) (ok, refused bool, err error) {
@@ -205,7 +205,7 @@ func runCeilingProbe(base powerplan) {
 				ceilLog("aborted: mining is held (pool guard, fan lock, thermal guard) or the clock limit was re-locked")
 				return
 			}
-			if !applied && !refused { // no answer, or the panel's own refusal: says nothing about Goldshell's cap
+			if !applied && !refused { // no answer, or the panel's own refusal: says nothing about the OEM's cap
 				ceilLog("%s: %d %s couldn't be written (%v): stopping, no result", ax.Label, v, ax.Unit, aerr)
 				ceilAbort.Store(true)
 				return
@@ -294,7 +294,7 @@ func ceilFinish(base powerplan) {
 			}
 		}
 	}
-	if !restored && miningHoldErr() == nil { // never leave it on a probe step: Goldshell's own plan
+	if !restored && miningHoldErr() == nil { // never leave it on a probe step: the OEM's own plan
 		if err := applyStockPlanGen(ceilGen.Load()); err != nil {
 			ceilLog("couldn't put the starting setting back, and %s stock plan failed too: %v", oemOf(), err)
 			activity.emit("⚠ limit probe: the starting setting couldn't be put back and " + oemOf() + " stock plan failed (" + err.Error() + "): apply " + stockWord() + " or a preset")
@@ -383,7 +383,7 @@ func handleCeiling(w http.ResponseWriter, r *http.Request) {
 			probeHi = ceilBox2Hi()
 		}
 		if err := plusTrimErr(probeHi); err != nil {
-			// its clock steps would be refused for the "+" chip, and each refusal read as Goldshell's cap
+			// its clock steps would be refused for the "+" chip, and each refusal read as the OEM's cap
 			writeJSON(w, map[string]any{"ok": false, "err": "a chip is trimmed faster than its board, so the clock steps would stop early (" + err.Error() + "): set it to 0 or switch chip trims off for the probe"})
 			return
 		}

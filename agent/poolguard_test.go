@@ -58,7 +58,7 @@ func TestPoolGuard(t *testing.T) {
 	if poolHoldErr() != nil {
 		t.Fatal("hold still on after resume")
 	}
-	// Goldshell's no-pool placeholder is offline: left alone
+	// The OEM's no-pool placeholder is offline: left alone
 	pgStrikes, pgActed, removed = map[string]int{}, map[string]int{}, nil
 	list = nil
 	live = []poolView{{Index: 0, URL: "stratum+tcp://benchmark", User: ""}}

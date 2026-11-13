@@ -1,6 +1,6 @@
 package main
 
-// Lane C2 (PowerEstimate on the SC Box II): the per-setting estimate is inert with the gate off, shows Goldshell's
+// Lane C2 (PowerEstimate on the SC Box II): the per-setting estimate is inert with the gate off, shows the OEM's
 // figure for an uncalibrated stock mode, nothing for any other setting, the owner's wall reading once given, and
 // keeps that reading on the config store (cfgWrite, with the FAT .bak).
 
@@ -78,7 +78,7 @@ func TestC2PowerBox2SpecBeforeCalibration(t *testing.T) {
 	c2Box2(t, true, dashboard{})
 	v := powerView(c2Dash(690, 42, 1900))
 	if c2Num(v, "watts") != 400 || v["source"] != "spec" || v["calibrated"] != false || v["mode"] != "Hashrate" {
-		t.Fatalf("690/42 uncalibrated: Goldshell's 400 W, marked spec: %v", v)
+		t.Fatalf("690/42 uncalibrated: the OEM's 400 W, marked spec: %v", v)
 	}
 	if j := c2Num(v, "jth"); j != 211 { // 400 W / 1.9 TH/s
 		t.Fatalf("J/TH = W / reported TH/s: %v", j)
@@ -126,7 +126,7 @@ func TestC2PowerBox2CalibratePersist(t *testing.T) {
 	if _, err := os.Stat(path); err != nil || !strings.HasPrefix(path, dir) {
 		t.Fatalf("reading not stored in the config dir: %v", err)
 	}
-	// the other mode keeps Goldshell's figure until it gets its own reading
+	// the other mode keeps the OEM's figure until it gets its own reading
 	if v := powerView(c2Dash(525, 61, 1450)); c2Num(v, "watts") != 260 || v["source"] != "spec" {
 		t.Fatalf("525/61 must stay spec: %v", v)
 	}

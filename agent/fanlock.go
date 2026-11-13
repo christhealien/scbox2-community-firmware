@@ -1,6 +1,6 @@
 package main
 
-// Fan lock. When Goldshell's watchdog keeps flagging a fan (a minute in a row), the panel doesn't leave it
+// Fan lock. When the OEM's watchdog keeps flagging a fan (a minute in a row), the panel doesn't leave it
 // to the watchdog's endless kill-and-restart: it puts the miner on Idle (hash boards powered down: no heat) and
 // locks mining until someone has looked at the fans. The Dashboard explains why; unlocking needs the
 // warning accepted, and isn't possible while the watchdog still flags a fan. Nothing that would start
@@ -26,7 +26,7 @@ type fanLockState struct {
 }
 
 type fanLockConfig struct {
-	Off        bool  `json:"off"`                   // leave fan failures to Goldshell's watchdog alone (not recommended)
+	Off        bool  `json:"off"`                   // leave fan failures to the OEM's watchdog alone (not recommended)
 	UnlockedAt int64 `json:"unlocked_at,omitempty"` // the last unlock (unix s): kept, so a restart doesn't lock again on the kills before it
 }
 

@@ -1,7 +1,7 @@
 # SC Box II firmware with the scbox2 panel
 
 Builds a flashable SC Box II firmware (`.ius` for the in-panel update and an SD-card `.img`) from
-the stock SC Box II 2.2.1 `firmware.ius`, with the scbox2 panel built in and the OEM's extras removed.
+the OEM's stock SC Box II 2.2.1 `firmware.ius`, with the scbox2 panel built in and the OEM's extras removed.
 (`README.md` / `build.py` in this folder are the **SC Lite** build: a different miner, a different pipeline.)
 
 ## 1. Build the panel
@@ -85,7 +85,7 @@ build are deleted when a build starts, so a failed build leaves nothing behind (
 6. **Stock checks:** the OEM's own `upgrade`/uboot0 container checks (`tools/ius.py verify`).
 7. **Leak/naming gate** (`check_image`), on the `.ius` **and** the `.img`: a raw grep plus a grep of every file
    in the decompressed system item for the leak hosts (114.114.114.114, www.baidu.com, www.google.com,
-   202.120.2.101, 202.112.31.197, asia.pool.ntp.org, and the OEM's cloud and discovery hosts), and for any file
+   202.120.2.101, 202.112.31.197, asia.pool.ntp.org, and the OEM cloud's two hosts: its MQTT hub and its miner finder), and for any file
    name or content mentioning the SC Lite (`sclite`, `sc lite`, `sc-lite`, `sc_lite`, any case). Explicit
    exemptions: `/usr/bin/scbox2-agent` may contain 114.114.114.114 (its DNS policy refuses that resolver) and
    SC Lite names (its model table and the SC Lite's update channel, off on the Box II);

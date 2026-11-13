@@ -82,11 +82,11 @@ case "$1" in
 	# this miner's random seed (loaded by S38initdir): a fresh one every 6 hours, in case the power is cut
 	[ -x /usr/libexec/scbox2/seed ] && /usr/libexec/scbox2/seed loop </dev/null >/dev/null 2>&1 &
 
-	# /etc/localtime points here; until a time zone is chosen in the panel it's Goldshell's (China, UTC+8)
+	# /etc/localtime points here; until a time zone is chosen in the panel it's the OEM's (China, UTC+8)
 	[ -s $CFG/localtime ] || cp /etc/localtime.stock $CFG/localtime 2>/dev/null
 
 	# ---------------------------------------------------------------- product.json overlay (R15 / Wi-Fi)
-	# Goldshell's programs read each fan's max RPM from /root/product.json and flag a fan under 80 % of
+	# the OEM's programs read each fan's max RPM from /root/product.json and flag a fan under 80 % of
 	# it.  The panel keeps a fitted copy at $CFG/product.json; where it is complete and sane we use it,
 	# otherwise the stock /root/product.json.  EITHER way we force "wifi":0 so minerd never starts the
 	# Wi-Fi stack (there is no Wi-Fi chip; the stack is removed from the image).  The chosen file is
@@ -104,7 +104,7 @@ case "$1" in
 	OV=/tmp/scbox2-product.json
 	sed 's/"wifi"[[:space:]]*:[[:space:]]*[0-9][0-9]*/"wifi":0/' "$SRC" > $OV 2>/dev/null
 	grep -q '"wifi"[[:space:]]*:[[:space:]]*0' $OV || sed -i 's/}[[:space:]]*$/,"wifi":0}/' $OV 2>/dev/null
-	# only bind a complete, brace-balanced result (a half-written file would stop Goldshell's programs)
+	# only bind a complete, brace-balanced result (a half-written file would stop the OEM's programs)
 	if [ -s $OV ] && [ "$(tr -cd '{' < $OV | wc -c)" -eq "$(tr -cd '}' < $OV | wc -c)" ] &&
 		grep -q '"wifi"[[:space:]]*:[[:space:]]*0' $OV; then
 		mount -o bind $OV /root/product.json && echo "scbox2: product.json overlaid (wifi:0)"

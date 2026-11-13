@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// r6-security: the private log export must never carry a pool password. Goldshell's backend log prints every
+// r6-security: the private log export must never carry a pool password. The OEM's backend log prints every
 // pool as JSON at each start ("pass": "..."), and with verbose on the miner's protocol dump (-P) logs the
 // mining.authorize line. privateTokens() only knows the passwords when the backend answers, and only those
 // of 6+ characters.

@@ -192,7 +192,7 @@ func TestR5LoadFanConfigDangerousValues(t *testing.T) {
 }
 
 // F6: the fitted fan file is only checked to parse at start; a parseable one with maxrpm 0 (no fan is ever
-// flagged: Goldshell's fan check is off) or 1e9 (every fan flagged) is kept. productFansSane is the proposed check.
+// flagged: the OEM's fan check is off) or 1e9 (every fan flagged) is kept. productFansSane is the proposed check.
 func TestR5FittedFanFileRange(t *testing.T) {
 	dir := r5Env(t)
 	p := filepath.Join(dir, "product.json")

@@ -3,10 +3,10 @@ package main
 // B12: notifications & log export, model-aware + secret-safe on Box II.
 //
 // Proves:
-//   - SC Lite log/export/report headers and labels are byte-identical to the pre-port firmware.
-//   - On the SC Box II profile the same headers use the profile name (no "Goldshell" wording),
+//   - SC Lite log/export/report headers and labels use the profile name ("SC Lite", no manufacturer's name).
+//   - On the SC Box II profile the same headers use its profile name (no manufacturer's name, no "SC Lite"),
 //     the chip report uses the model id, and the hot-alert text uses the profile's thermal limits.
-//   - The private log export's source path for Goldshell's own logs is flag/model-driven: with
+//   - The private log export's source path for the OEM's own logs is flag/model-driven: with
 //     backupRoot pointed at a /dev/shm tree (the Box II layout) the export reads the backend log
 //     from /dev/shm/minerd/trash/syslog, not a hardcoded /backup.
 //   - Redaction still strips every secret category on Box II sample data (pools/wallet/worker,
@@ -24,22 +24,22 @@ import (
 	"testing"
 )
 
-// ---- 1. SC Lite byte-identity (the default profile) ----
+// ---- 1. SC Lite headers (the default profile) ----
 
-func TestB12SCLiteHeadersByteIdentical(t *testing.T) {
-	if got := exportBrand(); got != "Goldshell SC Lite" {
-		t.Fatalf("exportBrand() = %q, want %q", got, "Goldshell SC Lite")
+func TestB12SCLiteHeaders(t *testing.T) {
+	if got := exportBrand(); got != "SC Lite" {
+		t.Fatalf("exportBrand() = %q, want %q", got, "SC Lite")
 	}
 	if got := modelTag(); got != "SCLite" {
 		t.Fatalf("modelTag() = %q, want %q", got, "SCLite")
 	}
-	if h := logHeader("mining log", false); !strings.HasPrefix(h, "# Goldshell SC Lite — mining log\n# miner: ") {
+	if h := logHeader("mining log", false); !strings.HasPrefix(h, "# SC Lite — mining log\n# miner: ") {
 		t.Fatalf("public logHeader not byte-identical:\n%q", h)
 	}
-	if h := logHeader("system log", true); !strings.HasPrefix(h, "# Goldshell SC Lite — system log\n# miner: MINER (private details taken out)\n") {
+	if h := logHeader("system log", true); !strings.HasPrefix(h, "# SC Lite — system log\n# miner: MINER (private details taken out)\n") {
 		t.Fatalf("private logHeader not byte-identical:\n%q", h)
 	}
-	if rh := runHeader(tunerBundle{}, false); !strings.HasPrefix(rh, "# Goldshell SC Lite — tuner run\n") {
+	if rh := runHeader(tunerBundle{}, false); !strings.HasPrefix(rh, "# SC Lite — tuner run\n") {
 		t.Fatalf("runHeader not byte-identical:\n%q", rh)
 	}
 	// the chip report label and filename stem are the SC Lite strings
@@ -56,15 +56,15 @@ func TestB12SCLiteHotAlertByteIdentical(t *testing.T) {
 	}
 }
 
-// ---- 2. SC Box II: model-aware headers, no Goldshell wording ----
+// ---- 2. SC Box II: model-aware headers, no manufacturer's name ----
 
 func TestB12Box2Headers(t *testing.T) {
 	useBox2(t)
 	if got := exportBrand(); got != "SC Box II" {
 		t.Fatalf("exportBrand() = %q, want %q", got, "SC Box II")
 	}
-	if strings.Contains(exportBrand(), "Goldshell") {
-		t.Fatalf("Box II export brand must not mention Goldshell: %q", exportBrand())
+	if oemWord.MatchString(exportBrand()) {
+		t.Fatalf("Box II export brand must not name the manufacturer: %q", exportBrand())
 	}
 	if got := modelTag(); got != "SCBoxII" {
 		t.Fatalf("modelTag() = %q, want %q", got, "SCBoxII")
@@ -73,8 +73,8 @@ func TestB12Box2Headers(t *testing.T) {
 		if !strings.HasPrefix(h, "# SC Box II — ") {
 			t.Fatalf("Box II header not model-aware:\n%q", h)
 		}
-		if strings.Contains(h, "Goldshell") || strings.Contains(h, "SC Lite") {
-			t.Fatalf("Box II header leaks SC Lite/Goldshell:\n%q", h)
+		if oemWord.MatchString(h) || strings.Contains(h, "SC Lite") {
+			t.Fatalf("Box II header leaks SC Lite or the manufacturer's name:\n%q", h)
 		}
 	}
 }
@@ -128,7 +128,7 @@ func TestB12Box2LogSourceDevShm(t *testing.T) {
 	setPools(`[{"url":"stratum+tcp://sia.pool.example:3334","user":"s1aWALLETxxxxxxxxxxxxxxxxxxxxxxxxxxxx.boxrig","pass":"poolsecretpw"}]`)
 	setLog(`{"body":" [2026-11-09 09:00:01] Pool 0 stratum+tcp://sia.pool.example:3334 alive, user s1aWALLETxxxxxxxxxxxxxxxxxxxxxxxxxxxx.boxrig\n"}`)
 
-	// Box II keeps Goldshell's own logs under /dev/shm (RAM), not /backup. backupRoot is the
+	// Box II keeps the OEM's own logs under /dev/shm (RAM), not /backup. backupRoot is the
 	// flag-driven knob (main.go -backup, coordinated with B4 = /dev/shm). Point it at a stand-in tree.
 	shm := filepath.Join(t.TempDir(), "dev-shm")
 	backupRoot = shm // l05Env's cleanup restores the original afterwards
@@ -142,9 +142,9 @@ func TestB12Box2LogSourceDevShm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// goldshellLogs resolves the backend log under /dev/shm, never a hardcoded /backup
+	// oemLogs resolves the backend log under /dev/shm, never a hardcoded /backup
 	var backendPath string
-	for _, gl := range goldshellLogs() {
+	for _, gl := range oemLogs() {
 		if gl[0] == "oem-backend-minerd.txt" {
 			backendPath = gl[1]
 		}

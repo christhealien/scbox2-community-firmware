@@ -1,10 +1,10 @@
 package main
 
-// Mining-program health: Goldshell's watchdog (xminerd) starts the mining program (intminer) once at boot.
+// Mining-program health: the OEM's watchdog (xminerd) starts the mining program (intminer) once at boot.
 // When intminer crashes as it starts (a hash board or its data cable, the power supply), nothing starts it
-// again, and Goldshell's backend (minerd) then fails on every request: the panel saw only "API :4028 isn't
+// again, and the OEM's backend (minerd) then fails on every request: the panel saw only "API :4028 isn't
 // answering", HTTP 500s and "EOF" errors. This watches the process itself so the Dashboard can say what's
-// wrong, and the log export carries Goldshell's own logs from /backup.
+// wrong, and the log export carries the OEM's own logs from /backup.
 
 import (
 	"encoding/json"
@@ -144,7 +144,7 @@ func intminerStopsSince(t time.Time) int {
 	return n
 }
 
-// minerdExits: how often init restarted Goldshell's backend (minerd) in the window, from the system log
+// minerdExits: how often init restarted the OEM's backend (minerd) in the window, from the system log
 // ("init: process '… minerd' (pid N) exited").
 func minerdExits(log string, now time.Time, window time.Duration) int {
 	n := 0
@@ -279,7 +279,7 @@ func miningDownMessage0(now time.Time) string {
 	return msg + " This is usually hardware: a hash board or its data (ribbon) cable, often after a knock or a move, or the power supply. Settings → Reboot miner tries again (Restart mining goes through the backend, which fails without the mining program). To get help, Log → “For sending” saves the logs, now with " + oemOwnCurly() + " own watchdog, fan and backend logs."
 }
 
-// friendlyBackendErr: a request to Goldshell's backend that got no answer at all (connection refused, the
+// friendlyBackendErr: a request to the OEM's backend that got no answer at all (connection refused, the
 // connection closed mid-request = EOF, a timeout) said in words, without Go's error text.
 func friendlyBackendErr(err error) error {
 	if err == nil {
@@ -298,11 +298,11 @@ func friendlyBackendErr(err error) error {
 	return fmt.Errorf("the miner's backend (%s minerd) didn't answer: %s", oemPoss(), why)
 }
 
-// ---- Goldshell's own logs for the log export ----
+// ---- the OEM's own logs for the log export ----
 
-// goldshellLogs: name in the zip → path, the watchdog, fan controller and backend logs Goldshell keeps in
+// oemLogs: name in the zip → path, the watchdog, fan controller and backend logs the OEM keeps in
 // /backup (they survive reboots; the system log doesn't have them).
-func goldshellLogs() [][2]string {
+func oemLogs() [][2]string {
 	return [][2]string{
 		{oemFile("watchdog-xminerd.txt"), filepath.Join(backupRoot, "xminerd/trash/xminerdlog")},
 		{oemFile("fans-fanctrl.txt"), filepath.Join(backupRoot, "fanctrl/trash/fanctrllog")},
@@ -336,7 +336,7 @@ func tailFile(path string, max int64) (string, error) {
 	return string(b), nil
 }
 
-// processesText: which of Goldshell's programs run now, and what the panel saw of the mining program.
+// processesText: which of the OEM's programs run now, and what the panel saw of the mining program.
 func processesText(now time.Time) string {
 	var b strings.Builder
 	for _, n := range []string{"fanctrl", "xminerd", "minerd", "intminer"} {
@@ -424,7 +424,7 @@ func verboseGuard(now time.Time) {
 
 // chipHookGuard: with chip trims on, the miner runs a hooked copy of the mining program. If that copy keeps
 // dying (4 stops in 15 minutes, and not because no pool answers), chip trims are switched off so the next
-// start is Goldshell's own program: mining comes back, the owner is told why.
+// start is the OEM's own program: mining comes back, the owner is told why.
 // chipHookLib: where the wrapper loads the chip-trim library from.
 var chipHookLib = brandChipLibPath
 
@@ -481,13 +481,13 @@ func chipHookGuard(now time.Time) {
 	go notify(evChipTrim, msg)
 }
 
-// stalePidGuard: Goldshell's watchdog removes its "miner running" file only when its own child exits. A
+// stalePidGuard: the OEM's watchdog removes its "miner running" file only when its own child exits. A
 // mining program started by an earlier watchdog (it was restarted) isn't its child: when that one exits the
 // file stays, and the watchdog never starts mining again. With no mining program running, a file naming a
 // process that isn't one is removed.
 var xminerdPidFile = "/var/run/xminerd.pid"
 
-// killEscalate: Goldshell's watchdog only ever sends the mining program SIGINT for a fan fault, and powers
+// killEscalate: the OEM's watchdog only ever sends the mining program SIGINT for a fan fault, and powers
 // the boards down only once it has exited. One that is still running 15 s after such a kill is ended for it.
 var lastEscalated int64
 
@@ -552,7 +552,7 @@ func verboseAutoOffPath() string {
 	return filepath.Join(filepath.Dir(*authFile), "verbose-auto-off.json")
 }
 
-// ---- Goldshell's watchdog (xminerd): fan check ----
+// ---- the OEM's watchdog (xminerd): fan check ----
 //
 // Every few seconds the watchdog logs each fan's duty and measured RPM and a "fan status" bitmask (bit n set:
 // fan n looks failed). While any bit is set it kills the mining program ("Kill Miner Reason NCF(0,1,1)") and

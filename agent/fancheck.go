@@ -2,18 +2,18 @@ package main
 
 // The fan check, fitted to this miner's fans.
 //
-// Goldshell's watchdog (xminerd) reads each fan's "maxrpm" from /root/product.json (2200 on an SC Lite) and
+// The OEM's watchdog (xminerd) reads each fan's "maxrpm" from /root/product.json (2200 on an SC Lite) and
 // flags a fan whose RPM isn't above maxrpm/125 × fan % (whole-number division): 80 % of a straight line from
 // 0 to maxrpm. At 100 % that's 1700 RPM, so quieter replacement fans (1600 RPM at full speed) are all flagged
 // and the watchdog keeps killing mining, while a fan that stops is still caught by it (below 30 % fan it only
 // asks for some RPM at all). Taken apart from xminerd 2.2.0; the figures match both miners we saw.
 //
-// "Fit to my fans" doesn't touch Goldshell's programs: it gives them their own figures. The watchdog's sweep
+// "Fit to my fans" doesn't touch the OEM's programs: it gives them their own figures. The watchdog's sweep
 // at boot (each fan's RPM at 10 … 100 %) shows what each fan really does; the fitted maxrpm is the highest
 // that keeps that whole curve 15 % clear of the line, never above stock. A fan that slows down or stops is
-// still flagged, by Goldshell's own watchdog. The adjusted copy lives on the config partition and the boot
-// script binds it over /root/product.json before Goldshell's programs start (files/S48sclite in the kit), so
-// a change takes effect at the next reboot: Goldshell's programs read the file once, as they start, and
+// still flagged, by the OEM's own watchdog. The adjusted copy lives on the config partition and the boot
+// script binds it over /root/product.json before the OEM's programs start (files/S48sclite in the kit), so
+// a change takes effect at the next reboot: the OEM's programs read the file once, as they start, and
 // restarting the watchdog on its own could leave the mining program without (or with two) watchdogs.
 
 import (
@@ -38,7 +38,7 @@ var (
 
 const fanFitMin = 400
 
-// fanStockMax: the fan "maxrpm" Goldshell's watchdog uses and the most the fit ever sets — now taken from
+// fanStockMax: the fan "maxrpm" the OEM's watchdog uses and the most the fit ever sets — now taken from
 // the model profile (2200 on an SC Lite, 4500 on an SC Box II) instead of a hardcoded 2200. The fit range
 // and values adapt to it. With no model loaded the default profile is SC Lite, so this stays 2200 and SC
 // Lite behaviour is unchanged.
@@ -195,7 +195,7 @@ func fanCheckFit(maxrpm []int) error {
 	sw := readFanSweep()
 	for i, r := range maxrpm {
 		// never more lenient than what this miner's own fans measured (the fit is the most lenient allowed)
-		if r < fanStockMax() { // anything more lenient than Goldshell's figure needs this fan's own measurements
+		if r < fanStockMax() { // anything more lenient than the OEM's figure needs this fan's own measurements
 			c, ok := sw[i]
 			if !ok {
 				return fmt.Errorf("fan %d: no start-up fan test in the log to fit to (Re-run %s fan test, then fit)", i, oemOf())
@@ -214,9 +214,9 @@ func fanCheckFit(maxrpm []int) error {
 	}
 	// Replace only the maxrpm digits in the stock file's own bytes; never re-encode the JSON. Re-encoding
 	// (json.Marshal of the parsed document) rewrites every number, turning "tempcutoff":92.0 into 92 — and
-	// Goldshell's fan control reads tempcutoff with a real-valued JSON call that returns 0 for an integer,
+	// the OEM's fan control reads tempcutoff with a real-valued JSON call that returns 0 for an integer,
 	// so a 0 there becomes its 95 °C default: the fit would quietly RAISE the thermal cut-off above stock.
-	// Keeping every other byte of Goldshell's file verbatim leaves tempcutoff/temp_target exactly as they were.
+	// Keeping every other byte of the OEM's file verbatim leaves tempcutoff/temp_target exactly as they were.
 	out, err := replaceMaxRPM(raw, maxrpm)
 	if err != nil {
 		return err
@@ -293,7 +293,7 @@ func walkMaxRPM(src []byte, fn func(i int) string) ([]byte, int, error) {
 }
 
 // replaceMaxRPM rewrites the number after each "maxrpm" key, in fan order, to the given values, and leaves
-// every other byte untouched. It never parses-and-re-encodes the JSON: that would rewrite Goldshell's other
+// every other byte untouched. It never parses-and-re-encodes the JSON: that would rewrite the OEM's other
 // numbers too (notably turn "tempcutoff":92.0 into 92, which the miner's fan control reads as a 0 cut-off and
 // replaces with its 95 °C default), quietly raising the thermal cut-off above stock. The count of maxrpm
 // keys must equal len(maxrpm), so an unexpected product.json is refused rather than half-written.
@@ -340,7 +340,7 @@ func sameExceptMaxRPM(a, b []byte) error {
 	return nil
 }
 
-// fanCheckStock: back to Goldshell's own figures (from the next reboot).
+// fanCheckStock: back to the OEM's own figures (from the next reboot).
 func fanCheckStock() error {
 	if err := os.Remove(fanOverlayPath()); err != nil && !os.IsNotExist(err) {
 		return err
@@ -401,7 +401,7 @@ func handleFanCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, fanCheckView())
 }
 
-// fanTestRerun restarts Goldshell's watchdog (xminerd; init starts it again within seconds). It forgets the
+// fanTestRerun restarts the OEM's watchdog (xminerd; init starts it again within seconds). It forgets the
 // fan speeds it learned and runs its start-up fan test again. Why: besides its fixed rule, the watchdog
 // records each fan's RPM the first time it sees that fan at a given duty, and from then on flags the fan
 // under 60 % of that (traced in xminerd at 0xa18e). A fan whose level said one thing while it really turned
@@ -423,9 +423,9 @@ func fanTestRerun() error {
 		return fmt.Errorf("the boards were shut down for heat: reboot the miner instead (that also runs the fan test)")
 	}
 	if !intminerRunning() {
-		// The re-run first puts the miner on Idle, which needs Goldshell's backend, which needs the mining
+		// The re-run first puts the miner on Idle, which needs the OEM's backend, which needs the mining
 		// program. While the miner is restarting or has just booted, that isn't up — and a reboot runs
-		// Goldshell's fan test anyway, so there's nothing to do. (At boot, productCheckAtStart waits for the
+		// the OEM's fan test anyway, so there's nothing to do. (At boot, productCheckAtStart waits for the
 		// mining program before it re-runs; here we refuse rather than fail half-way with a scary warning.)
 		return fmt.Errorf("the miner is restarting (the mining program isn't running): a reboot runs %s fan test anyway — try again once it's mining", oemOf())
 	}
@@ -527,7 +527,7 @@ var monoStart = time.Now()
 
 func monoSec() int64 { return int64(time.Since(monoStart)/time.Second) + 1 }
 
-// fanSweepUntil (monoSec()): until then Goldshell's fan test is sweeping the fans from 10 % (boards must stay idle).
+// fanSweepUntil (monoSec()): until then the OEM's fan test is sweeping the fans from 10 % (boards must stay idle).
 var fanSweepUntil atomic.Int64
 
 func fanRerunPath() string { return filepath.Join(filepath.Dir(*authFile), "fan-rerun.json") }
@@ -541,7 +541,7 @@ type fanRerunRec struct {
 var fanRerunRecoverWait = 10 * time.Minute
 
 // fanRerunRecover (at start): a fan test re-run that never finished left the miner on its Idle. Once
-// Goldshell's fan test is over, the setting from before goes back, as the run would have done, unless something
+// the OEM's fan test is over, the setting from before goes back, as the run would have done, unless something
 // was chosen since (the schedule, the owner), the fan lock or the pool guard holds it, or it isn't on Idle.
 func fanRerunRecover() {
 	b, err := os.ReadFile(fanRerunPath())
@@ -594,7 +594,7 @@ func fanRerunRecover() {
 	activity.emit("🌀 a fan test re-run was cut short by a restart: its Idle is over, the miner is back on " + what)
 }
 
-// fanTestRunning: Goldshell's start-up fan test is (probably) under way: within 2 minutes of a re-run, or
+// fanTestRunning: the OEM's start-up fan test is (probably) under way: within 2 minutes of a re-run, or
 // while its watchdog has run for less than 90 s (it tests the fans when it starts).
 var fanTestRunning = func() bool {
 	if fanRerunActive.Load() {
@@ -609,9 +609,9 @@ var fanTestRunning = func() bool {
 	return false
 }
 
-// productCheckAtStart: the fitted copy bound over /root/product.json must parse, or Goldshell's fan control
+// productCheckAtStart: the fitted copy bound over /root/product.json must parse, or the OEM's fan control
 // and watchdog exit at every start (no fan control, no over-temperature shutdown). A broken one is unbound
-// and set aside: they read Goldshell's own figures again.
+// and set aside: they read the OEM's own figures again.
 func productCheckAtStart() {
 	if !fanOverlayMounted() {
 		return
@@ -626,7 +626,7 @@ func productCheckAtStart() {
 	os.Rename(fanOverlayPath(), fanOverlayPath()+".bad")
 	activity.emit("⚠ the fan check's fitted figures can't be used (" + err.Error() + "): back to " + oemOf() + " figures (Controls & fan → Fan check to fit them again)")
 	if _, _, perr := readProductFans(productPath); perr == nil {
-		// It parsed, so Goldshell's watchdog started with its figures and needs restarting to pick up the
+		// It parsed, so the OEM's watchdog started with its figures and needs restarting to pick up the
 		// stock ones. The re-run has to put the miner on Idle first, which needs the mining program — not up
 		// yet at boot. Wait for it (the overlay is already unbound, so if it never comes up the next reboot is
 		// clean) rather than firing the re-run now and failing with a warning.
@@ -645,7 +645,7 @@ func productCheckAtStart() {
 // under fanFitMin makes the watchdog's limit 0 RPM at every duty: no fan would ever be flagged), and the
 // thermal fields the miner's fan control reads are intact. An overlay written by an older panel re-encoded
 // the JSON and lost tempcutoff/temp_target (they became 0, which the fan control turns into its 95 °C
-// default — a cut-off above stock); such an overlay is refused here so the miner falls back to Goldshell's
+// default — a cut-off above stock); such an overlay is refused here so the miner falls back to the OEM's
 // own file. When the stock copy is on hand, the fields must equal it exactly; otherwise they must at least
 // be present and above zero.
 func productOverlayOK(path string) error {
@@ -663,7 +663,7 @@ func productOverlayOK(path string) error {
 			return fmt.Errorf("fan %d: maxrpm %v is outside %d–%d", i, f["maxrpm"], fanFitMin, fanStockMax())
 		}
 	}
-	// tempcutoff and temp_target must be written as reals (with a decimal point). Goldshell's fan control
+	// tempcutoff and temp_target must be written as reals (with a decimal point). The OEM's fan control
 	// reads them with a real-valued JSON call: a whole-number token is a JSON integer, read as 0, and turned
 	// into its 95 °C default — a cut-off above stock. An older panel re-encoded the file and dropped the ".0".
 	// Note: a Go JSON parse can't tell 92 from 92.0 (both decode to float64), so this is a byte-level check.
@@ -676,7 +676,7 @@ func productOverlayOK(path string) error {
 			return fmt.Errorf("%s is %q, a whole number: %s fan control would read it as a 0 cut-off and use its 95 °C default", key, tok, oemPoss())
 		}
 	}
-	// When Goldshell's own copy is on hand, the overlay must match it byte-for-byte apart from the maxrpm
+	// When the OEM's own copy is on hand, the overlay must match it byte-for-byte apart from the maxrpm
 	// values: nothing else the fan control reads may drift.
 	if sraw, serr := os.ReadFile(fanStockCopy()); serr == nil {
 		if err := sameExceptMaxRPM(sraw, raw); err != nil {

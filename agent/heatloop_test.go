@@ -31,7 +31,7 @@ type hlMiner struct {
 	setting  map[string]any
 	puts     []hlPut
 	failFans bool          // fan writes (a manual plan PUT) answer 500
-	idleSlow time.Duration // the idle PUT takes this long (Goldshell's backend is slow)
+	idleSlow time.Duration // the idle PUT takes this long (the OEM's backend is slow)
 	apiIdle  bool          // the cgminer API still answers while on the idle plan (stale or while stopping)
 	clk      time.Time
 	ln       net.Listener
@@ -522,7 +522,7 @@ func TestHeatLoopWokenWhileHotReIdles(t *testing.T) {
 	}
 }
 
-// 14. curve off (Goldshell's own fan control): the abort tier and the escalation still work
+// 14. curve off (the OEM's own fan control): the abort tier and the escalation still work
 func TestHeatLoopCurveOff(t *testing.T) {
 	m := newHLMiner(t)
 	c := hlCfg()
