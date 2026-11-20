@@ -33,7 +33,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -62,7 +61,12 @@ func accessLoad(c netConfig) {
 
 // peerAllowed: may this address reach the panel or SSH at all?
 func peerAllowed(ip net.IP) bool {
-	if ip == nil || localPeer(ip) {
+	if ip == nil {
+		// an address that can't be read (not a TCP peer): the hardened builds refuse it (v0.5.6, the SC5 review), the
+		// SC Lite allows it as before
+		return !secHardened
+	}
+	if localPeer(ip) {
 		return true
 	}
 	if secHardened {
@@ -515,7 +519,7 @@ func forgetRevoked() {
 	revSeen = map[string]revInfo{}
 	revMu.Unlock()
 	if n > 0 {
-		os.Remove(revokedPath())
+		cfgRemove(revokedPath())
 	}
 }
 
@@ -601,7 +605,7 @@ func handleAccess(w http.ResponseWriter, r *http.Request, outside, httpsOnly, p8
 		return
 	}
 	if err := saveNetConfig(c); err != nil {
-		writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 		return
 	}
 	accessLoad(c)
@@ -624,8 +628,7 @@ func handleAccess(w http.ResponseWriter, r *http.Request, outside, httpsOnly, p8
 // (accepted while "Allow access from outside" was on); how many.
 func dropOutsideConns() int {
 	gone := func(c net.Conn) bool {
-		ip := remoteIPOf(c.RemoteAddr())
-		return ip != nil && !peerAllowed(ip)
+		return !peerAllowed(remoteIPOf(c.RemoteAddr()))
 	}
 	connMu.Lock()
 	var cs []net.Conn

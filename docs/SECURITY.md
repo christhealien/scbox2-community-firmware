@@ -1,7 +1,7 @@
 # Security and privacy
 
 What the SC Box II Community Firmware opens on your network, what it contacts and when, which accounts exist,
-and how updates are checked. Everything here describes the **public build** (v0.5.1).
+and how updates are checked. Everything here describes the **public build** (v0.5.6).
 
 **In short:** the panel and SSH answer only on your local network, one password protects both, nothing contacts
 the internet except the time servers (and DNS to find them) unless you set something up, and the miner runs fully
@@ -60,7 +60,7 @@ The miner always starts with `--no-pool-redirect`: a pool can't move it to anoth
 | The Wi-Fi access-point stack (hostapd, wpa_supplicant, dnsmasq) | The board has no Wi-Fi chip. |
 | `telnet`, `scp` and `sftp` clients | Unused. |
 | The OEM's development leftovers | An NFS mount script for a factory server, the config of a web server that isn't in the image, and a factory Litecoin pool file with someone else's pools. |
-| The shared `/etc/random-seed` | The same file on every unit. Each miner now keeps its own random seed on its config partition. |
+| The shared `/etc/random-seed` | The same file on every unit. Each miner now keeps its own random seed on its config partition (renewed at every boot and at shutdown). |
 
 Kept: the OEM's "send IP" broadcast inside your LAN (UDP 1314 to 255.255.255.255), without its call to
 the OEM's discovery host. It belongs to a key handler in the OEM backend (`minerd`) and likely never fires on this board; it
@@ -114,6 +114,11 @@ Protection on the panel and SSH:
 - **Changes must come from the panel's own page.** A request from another website, or a script that doesn't name
   the panel, is refused.
 - **Installing firmware** and **changing the update source** ask for the panel password again.
+
+The login file, the SSH host key and the HTTPS key are kept on the config partition. That partition is mounted
+owner-only (`umask=077`), and from v0.5.2 **read-only** while the miner runs. The running copy the programs use
+is a RAM folder (`/mnt/config`, mode 0700, root only). A setting is written to the partition only when it is
+saved, in a short write window (one at a time, with a backup copy).
 
 ## Update integrity
 

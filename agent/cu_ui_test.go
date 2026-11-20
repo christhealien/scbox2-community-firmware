@@ -38,6 +38,9 @@ func modelReply(t *testing.T) map[string]any {
 }
 
 func TestCUCommissionCardInPage(t *testing.T) {
+	if publicBuild {
+		t.Skip("the public build serves no Commissioning card (TestV054PublicPageStripped)")
+	}
 	oldModel := model
 	defer func() { model = oldModel }()
 	model = profSCLite
@@ -92,6 +95,9 @@ func TestCUCommissionSigSCLiteUnchanged(t *testing.T) {
 }
 
 func TestCUCommissionSigBox2(t *testing.T) {
+	if publicBuild {
+		t.Skip("the owner's commissioning build only: the public release's set is fixed")
+	}
 	defer commissionSetup(t)()
 	applyCommission()
 	if s := commissionSig(); s != "none" {

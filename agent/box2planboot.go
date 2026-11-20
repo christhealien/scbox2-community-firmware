@@ -13,8 +13,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"os"
 	"time"
+
+	"sclite-agent/internal/cfgwin"
 )
 
 // test seams: a first start is a start with no panel files yet (freshInstall)
@@ -86,6 +90,7 @@ func box2PlanBootOnce(cur map[string]any) {
 		log.Printf("first start: %s selected, fans on auto (balanced curve) (%v)", box2StockHigh, err)
 		if err == nil {
 			activity.emit("⚙ first start: " + box2StockHigh + " selected, fans on auto (balanced curve)")
+			oemPersist(true) // the plan chosen onto the flash: the next boot starts with it (cfgshadow.go)
 		}
 		return
 	}
@@ -93,6 +98,9 @@ func box2PlanBootOnce(cur map[string]any) {
 		return // a stock mode selected by index: minerd's own plan
 	}
 	s, _ := cur["manualPowerplan"].(string)
+	if box2HealSavedPlan(cur, s) {
+		return
+	}
 	what, _ := box2PlanVerdict(cur, s)
 	var err error
 	switch what {
@@ -106,4 +114,66 @@ func box2PlanBootOnce(cur map[string]any) {
 		log.Printf("start-up: the running plan (%s) had a fan duty in its 4th field, which on this model is a voltage-trim setting, not a fan speed: re-sent with the stock trim value (%v)", planShowRaw(s), err)
 	}
 	// (on Idle nothing is written, errMinerIdle: the wake-up write goes through the same writer)
+	if what != "" && err == nil {
+		oemPersist(true) // the corrected plan onto the flash: the next boot starts with it (cfgshadow.go)
+	}
+}
+
+// box2HealOn: the settings live in RAM with the flash read-only (cfgshadow.go); a test seam.
+var box2HealOn = cfgShadow
+
+// box2SavedPlans: the manual plans in the flash's cpbsetting.json and in its dot copy (".cpbsetting.json", what
+// minerd starts from at boot): "" for one that is missing, unreadable or not a manual plan.
+var box2SavedPlans = func() (twin, dot string) {
+	read := func(rel string) string {
+		b, err := cfgwin.Read(rel)
+		if err != nil {
+			return ""
+		}
+		var m map[string]any
+		if json.Unmarshal(b, &m) != nil {
+			return ""
+		}
+		if man, _ := m["manual"].(bool); !man {
+			return ""
+		}
+		v, _ := m["manualPowerplan"].(string)
+		return v
+	}
+	return read("minerd/settings/cpbsetting.json"), read("minerd/settings/.cpbsetting.json")
+}
+
+// box2HealSavedPlan: v0.5.2–v0.5.5 saved an owner's plan into the flash's cpbsetting.json but not into its dot
+// copy, and minerd boots from the dot copy, so those boots started on an older plan (an owner's v0.5.5 log: 688 MHz
+// saved, every boot on 690). Once, at the first start of a version that saves both (cfgshadow.go): when minerd runs
+// what the dot copy holds and the saved plan differs from it, the saved plan is put back, if this run allows it,
+// and saved with its dot copy, so every later boot starts on it. Not while a tuning run's record waits for its own
+// put-back (tunerRecover), and nothing on Idle (the writer refuses). true: the saved plan was put back.
+func box2HealSavedPlan(cur map[string]any, running string) bool {
+	if !box2HealOn() {
+		return false
+	}
+	if _, err := os.Stat(tunerMarkerPath()); err == nil {
+		return false
+	}
+	twin, dot := box2SavedPlans()
+	if twin == "" || dot == "" || twin == running || dot != running {
+		return false
+	}
+	what, sp := box2PlanVerdict(cur, twin)
+	if what != "" {
+		return false // the saved plan isn't one this run allows: the usual start-up check decides
+	}
+	run, ok := parsePowerplanBox2(running)
+	if ok && run.FreqMHz == sp.FreqMHz && run.VrunMv == sp.VrunMv && run.Fan2 == sp.Fan2 {
+		return false // only the fan step differs: nothing to put back
+	}
+	_, err := mutatePlanNoWake(func(p *powerplan) { p.FreqMHz, p.VrunMv, p.Fan2 = sp.FreqMHz, sp.VrunMv, sp.Fan2 })
+	log.Printf("start-up: minerd booted on %q from an older copy of its settings; your saved %q put back (%v)", planShowRaw(running), planShowRaw(twin), err)
+	if err != nil {
+		return false
+	}
+	activity.emit(fmt.Sprintf("⚙ start-up: your saved clock setting (%d MHz / %s) put back — the boot had started on an older copy", sp.FreqMHz, box2LevelText(sp.VrunMv)))
+	oemPersist(true) // the plan and its dot copies onto the flash: the next boot starts with it
+	return true
 }

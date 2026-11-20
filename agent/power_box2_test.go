@@ -1,8 +1,9 @@
 package main
 
-// Lane C2 (PowerEstimate on the SC Box II): the per-setting estimate is inert with the gate off, shows the OEM's
-// figure for an uncalibrated stock mode, nothing for any other setting, the owner's wall reading once given, and
-// keeps that reading on the config store (cfgWrite, with the FAT .bak).
+// Lane C2 (PowerEstimate on the SC Box II): the per-setting estimate is inert with the gate off; uncalibrated it
+// shows the wall-meter readings measured on one unit (C2/C7: 392 W at Stock High, 251.8 W at Stock Low, 399.4 /
+// 406.9 / 413.5 W at 700 / 720 / 725 MHz), the curve through them elsewhere in 525–750 MHz, nothing outside; the
+// owner's wall reading once given, kept on the config store (cfgWrite, with the FAT .bak).
 
 import (
 	"math"
@@ -74,18 +75,27 @@ func TestC2PowerBox2OffInert(t *testing.T) {
 	}
 }
 
-func TestC2PowerBox2SpecBeforeCalibration(t *testing.T) {
+func TestC2PowerBox2MeasuredBeforeCalibration(t *testing.T) {
 	c2Box2(t, true, dashboard{})
 	v := powerView(c2Dash(690, 42, 1900))
-	if c2Num(v, "watts") != 400 || v["source"] != "spec" || v["calibrated"] != false || v["mode"] != "Hashrate" {
-		t.Fatalf("690/42 uncalibrated: the OEM's 400 W, marked spec: %v", v)
+	if c2Num(v, "watts") != 392 || v["source"] != "measured" || v["calibrated"] != false || v["mode"] != "Hashrate" {
+		t.Fatalf("690/42 uncalibrated: the 392 W measured on one unit (not the OEM's 400 W): %v", v)
 	}
-	if j := c2Num(v, "jth"); j != 211 { // 400 W / 1.9 TH/s
+	if n, _ := v["source_note"].(string); !strings.Contains(n, "one unit") {
+		t.Fatalf("an uncalibrated figure says it was measured on one unit: %q", n)
+	}
+	if j := c2Num(v, "jth"); j != 206 { // 392 W / 1.9 TH/s
 		t.Fatalf("J/TH = W / reported TH/s: %v", j)
 	}
 	v = powerView(c2Dash(525, 61, 1450))
-	if c2Num(v, "watts") != 260 || v["source"] != "spec" || v["mode"] != "Low-power" {
-		t.Fatalf("525/61 uncalibrated: 260 W spec: %v", v)
+	if c2Num(v, "watts") != 251.8 || v["source"] != "measured" || v["mode"] != "Low-power" {
+		t.Fatalf("525/61 uncalibrated: 251.8 W measured (not the OEM's 260 W): %v", v)
+	}
+	// the overclock readings (C7) are shown at their own settings too
+	for mhz, w := range map[int]float64{700: 399.4, 720: 406.9, 725: 413.5} {
+		if v := powerView(c2Dash(float64(mhz), 42, 2000)); c2Num(v, "watts") != w || v["source"] != "measured" || v["mode"] != nil {
+			t.Fatalf("%d/42: %v W measured: %v", mhz, w, v)
+		}
 	}
 	// the SC Lite model's inputs never appear
 	for _, k := range []string{"pv", "pv_eff", "held_v"} {
@@ -95,14 +105,53 @@ func TestC2PowerBox2SpecBeforeCalibration(t *testing.T) {
 	}
 }
 
-func TestC2PowerBox2OtherSettingNoNumber(t *testing.T) {
+// The curve W = k × the chips' clock × V² (k fitted at Stock High) goes through every reading on the first unit
+// within 1 W, so it is what fills the settings between and past them; outside 525–750 MHz and the stock levels'
+// interval there is no figure.
+func TestC2PowerBox2EstimateCurve(t *testing.T) {
 	c2Box2(t, true, dashboard{})
-	for _, s := range []struct{ mhz, code int }{{600, 50}, {690, 50}, {525, 42}, {750, 42}} {
+	curve := func(mhz, lvl int) float64 {
+		v, _ := box2Volts(lvl)
+		return box2PowerK * box2PLLClock(float64(mhz)) * v * v
+	}
+	for _, p := range box2PowerPoints {
+		if d := math.Abs(curve(p.MHz, p.V) - p.Watts); d > 1 {
+			t.Fatalf("the curve misses the %d MHz / %s reading (%.1f W) by %.1f W", p.MHz, box2LevelText(p.V), p.Watts, d)
+		}
+	}
+	for _, c := range []struct {
+		mhz, code int
+		want      float64
+	}{
+		{600, 50, 317.8}, // 600 MHz at ≈ 7.39 V
+		{690, 50, 364.1}, // Stock High's clock, a lower voltage: less
+		{525, 42, 299.4}, // Stock Low's clock at 7.67 V: more than Stock Low
+		{712, 42, 399.1}, // 712 → 700 on the chips: the 700 MHz figure's curve value
+		{740, 42, 420.5}, // 737.5 on the chips: past the readings (extrapolated)
+		{750, 42, 427.6}, // the probe's top: under its 460 W limit
+	} {
+		v := powerView(c2Dash(float64(c.mhz), c.code, 1700))
+		if w := c2Num(v, "watts"); math.Abs(w-c.want) > 0.11 || v["source"] != "estimate" || v["calibrated"] != false {
+			t.Fatalf("%d/%d: want ≈ %.1f W, an estimate: %v", c.mhz, c.code, c.want, v)
+		}
+	}
+	// monotone: more clock or more voltage never shows fewer watts
+	for lvl := 42; lvl <= 61; lvl++ {
+		prev := 0.0
+		for mhz := 525; mhz <= 750; mhz += 5 {
+			w, _, _, ok := box2EstimateWatts(mhz, lvl)
+			if !ok || w+0.5 < prev { // (a reading may sit up to 0.5 W off the curve)
+				t.Fatalf("%d MHz / %s: %.1f W after %.1f W (ok %v)", mhz, box2LevelText(lvl), w, prev, ok)
+			}
+			prev = max(prev, w)
+		}
+	}
+	for _, s := range []struct{ mhz, code int }{{500, 42}, {760, 42}, {690, 40}, {690, 62}} {
 		v := powerView(c2Dash(float64(s.mhz), s.code, 1700))
 		if _, ok := v["watts"]; ok {
-			t.Fatalf("%d/%d: no extrapolated/interpolated figure: %v", s.mhz, s.code, v)
+			t.Fatalf("%d/%d: outside the measured window, no figure: %v", s.mhz, s.code, v)
 		}
-		if r, _ := v["reason"].(string); !strings.Contains(r, "not calibrated for this setting") {
+		if r, _ := v["reason"].(string); !strings.Contains(r, "not estimated for this setting") {
 			t.Fatalf("%d/%d: reason %q", s.mhz, s.code, r)
 		}
 	}
@@ -126,9 +175,9 @@ func TestC2PowerBox2CalibratePersist(t *testing.T) {
 	if _, err := os.Stat(path); err != nil || !strings.HasPrefix(path, dir) {
 		t.Fatalf("reading not stored in the config dir: %v", err)
 	}
-	// the other mode keeps the OEM's figure until it gets its own reading
-	if v := powerView(c2Dash(525, 61, 1450)); c2Num(v, "watts") != 260 || v["source"] != "spec" {
-		t.Fatalf("525/61 must stay spec: %v", v)
+	// the other mode keeps the figure measured on one unit until it gets its own reading
+	if v := powerView(c2Dash(525, 61, 1450)); c2Num(v, "watts") != 251.8 || v["source"] != "measured" {
+		t.Fatalf("525/61 must stay the one-unit figure: %v", v)
 	}
 	setDash(c2Dash(525, 61, 1440))
 	if got := b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": 268, "mains_v": 230}); got["ok"] != true {
@@ -169,7 +218,7 @@ func TestC2PowerBox2NoHashrateScaling(t *testing.T) {
 	if c2Num(full, "watts") != c2Num(half, "watts") {
 		t.Fatalf("watts must not follow hashrate: %v vs %v", full["watts"], half["watts"])
 	}
-	if c2Num(half, "jth") != 421 { // 400 / 0.95
+	if c2Num(half, "jth") != 413 { // 392 / 0.95
 		t.Fatalf("J/TH follows the reported hashrate: %v", half["jth"])
 	}
 	if half["low_hash"] != true || full["low_hash"] != nil {
@@ -179,7 +228,7 @@ func TestC2PowerBox2NoHashrateScaling(t *testing.T) {
 
 func TestC2PowerBox2Refusals(t *testing.T) {
 	dir, setDash := c2Box2(t, true, c2Dash(690, 42, 1900))
-	for _, w := range []float64{20, 5000, 1000, 150} { // out of range; far from the 400 W spec
+	for _, w := range []float64{20, 5000, 1000, 150} { // out of range; far from the 392 W measured on one unit
 		if got := b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": w}); got["ok"] == true {
 			t.Fatalf("%v W at 690/42 must be refused: %v", w, got)
 		}
@@ -200,14 +249,39 @@ func TestC2PowerBox2Refusals(t *testing.T) {
 	if got := b10call(t, handlePower, "POST", "/api/power", map[string]any{"clear_mhz": 600, "clear_v": 50}); got["ok"] != true {
 		t.Fatalf("clear one: %v", got)
 	}
-	if v := powerView(c2Dash(600, 50, 1650)); v["watts"] != nil {
-		t.Fatalf("cleared setting must show no figure: %v", v)
+	if v := powerView(c2Dash(600, 50, 1650)); c2Num(v, "watts") != 317.8 || v["source"] != "estimate" {
+		t.Fatalf("a cleared setting goes back to the estimate: %v", v)
 	}
 	setDash(c2Dash(690, 42, 1900))
 	b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": 405})
 	b10call(t, handlePower, "POST", "/api/power", map[string]any{"clear": true})
-	if v := powerView(c2Dash(690, 42, 1900)); c2Num(v, "watts") != 400 || v["source"] != "spec" {
-		t.Fatalf("clear all: back to spec: %v", v)
+	if v := powerView(c2Dash(690, 42, 1900)); c2Num(v, "watts") != 392 || v["source"] != "measured" {
+		t.Fatalf("clear all: back to the one-unit figure: %v", v)
+	}
+	// far from the estimate at a non-measured setting: refused too
+	setDash(c2Dash(600, 50, 1650))
+	if got := b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": 700}); got["ok"] == true {
+		t.Fatalf("700 W at 600 MHz (≈ 318 W estimated): refused: %v", got)
+	}
+}
+
+// The probe's power limit reads box2UnitWatts: the owner's meter reading at that setting, else the estimate
+// scaled by how this unit's Stock High reading compares with the first unit's.
+func TestC2PowerBox2UnitWattsForLimit(t *testing.T) {
+	_, setDash := c2Box2(t, true, c2Dash(690, 42, 1950))
+	if w, src := box2UnitWatts(750, 42); math.Abs(w-427.6) > 0.11 || src != "estimate" {
+		t.Fatalf("750/42 uncalibrated: %.1f W (%s)", w, src)
+	}
+	if got := b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": 431.2}); got["ok"] != true { // 10 % over 392
+		t.Fatalf("calibrate 690/42: %v", got)
+	}
+	if w, src := box2UnitWatts(750, 42); math.Abs(w-427.6*1.1) > 0.2 || !strings.Contains(src, "scaled") || w <= ceilBox2PowerMaxW {
+		t.Fatalf("750/42 on a unit drawing 10 %% more at Stock High: %.1f W (%s), over the %.0f W limit", w, src, ceilBox2PowerMaxW)
+	}
+	setDash(c2Dash(725, 42, 1980))
+	b10call(t, handlePower, "POST", "/api/power", map[string]any{"cal_watts": 420})
+	if w, src := box2UnitWatts(725, 42); w != 420 || !strings.Contains(src, "meter") {
+		t.Fatalf("725/42 with its own reading: %.1f W (%s)", w, src)
 	}
 }
 

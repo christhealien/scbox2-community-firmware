@@ -87,7 +87,9 @@ func oemGoMessages(t *testing.T) map[string]string {
 		if n, ok := box2TunerInfo()["note"].(string); ok {
 			m["box2TunerNote"] = n
 		}
-		m["specSource"] = box2SpecSource
+		m["estSource"] = box2EstSource
+		m["estMeasured"] = box2EstMeasured
+		m["unlockErr"] = box2UnlockErr()
 		for _, f := range commissionable["scbox2"] {
 			m["commission"+f.Key] = f.Label
 		}
@@ -217,16 +219,18 @@ func TestOEMGoLiteralsAllowed(t *testing.T) {
 // lines every confirm() the user would read.
 const oemViewsScript = `
 const BOX_V_MEAS={42:7.67,43:7.61,44:7.58,45:7.55,46:7.52,61:7.03};
-const C=[];globalThis.confirm=m=>{C.push(m);return false;};globalThis.toast=()=>{};globalThis.loadFanCheck=()=>{};
+const C=[];globalThis.confirm=m=>{C.push(m);return false;};globalThis.toast=()=>{};globalThis.loadFanCheck=()=>{};let CTRL=null;
 globalThis.document={createElement:()=>mkEl('x'),body:{appendChild(){}},getElementById:id=>E[id]||null,querySelectorAll:()=>[],querySelector:()=>null};
 async function jpost(){return {j:{ok:true}};}
 const V={};const out=(k,h)=>{V[k]=String(h);};
 (async()=>{
 out('overtemp',overTempHTML({over_temp:{at:1700000000,limit:86}}));
 out('powertile',powerTileBox2({watts:400,amps:3.3,mains_v:120,calibrated:false},{ghs:1900},1900,(a,b,c)=>a+' '+b+' '+c));
-out('pwsrc',pwSrcText({source:'spec',spec_tol_pct:5}));
-renderPowerBox2({ok:true,calibrated:false,mains_v:230,watts:400,mhz:690,vcode:42,source:'spec',spec_tol_pct:5,
- specs:[{mode:'Hashrate',mhz:690,v:42,watts:400,ths:1.9},{mode:'Low-power',mhz:525,v:61,watts:260,ths:1.45}],cals:[]});out('power',$('powerbody').innerHTML);
+out('pwsrc',pwSrcText({source:'measured'})+' | '+pwSrcText({source:'estimate'}));
+renderPowerBox2({ok:true,calibrated:false,mains_v:230,watts:392,mhz:690,vcode:42,source:'measured',
+ points:[{mode:'Hashrate',mhz:690,v:42,watts:392,ths:1.97},{mode:'Low-power',mhz:525,v:61,watts:251.8,ths:1.51},{mode:'',mhz:720,v:42,watts:406.9,ths:2.04}],cals:[]});out('power',$('powerbody').innerHTML);
+out('ocdisc',b2OCDiscHTML());
+out('ocbar',b2OCBar({box2:{oc_limit:690,unlock_err:'run the clock ceiling probe first',oc_hard_max:750}},false,{freq:[525,690]})+' | '+b2OCBar({at:'x',box2:{oc_limit:720,oc_hard_max:750,probe:{cap:720,fail_at:725,why:'hardware errors',volts:'7.67 V',at:'2026-11-01T10:00:00Z'}}},true,{freq:[525,690]}));
 renderFanCheck({ok:true,maxrpm:[2200,2200,2200,2200],sweep:[],suggest:[1800,1800,1800,1800],watchdog:{fans:[2000,2000,2000,2000],status:0},lock:{}});
 out('fancheck',$('fcbody').innerHTML+' | '+$('fcnote').textContent);
 fanLockUI({fan_lock:{at:1700000000,flagged:'the watchdog flags fan 2',fans:[2000,2000,0,2000],idle:true}});out('fanlock',$('fanlockdlg').innerHTML);
@@ -252,7 +256,7 @@ for(const k in V)console.log('V_'+k+' '+V[k].replace(/\n/g,' '));
 var oemViewFuncs = []string{"overTempHTML", "powerTileBox2", "pwSrcText", "pwSetting", "boxVoltsTxt", "renderPowerBox2", "b2Name", "imgMore", "imgDot",
 	"renderFanCheck", "fanCheckFit", "fanTestRerun", "fanLockSet", "fanLockUI", "renderFanPair", "discHTML", "renderCeiling", "cvValidate",
 	"b2F4Note", "renderModelBanner", "modelName", "renderRecoveryBox2", "fmtWhen", "unexpText", "softRestart", "ctEnable",
-	"clearPowerCalBox2", "presetStock", "B2T"}
+	"clearPowerCalBox2", "presetStock", "B2T", "b2OCDiscHTML", "b2OCBar", "b2Levels"}
 
 func oemViews(t *testing.T, mdl string) map[string]string {
 	t.Helper()
@@ -292,7 +296,7 @@ func oemViews(t *testing.T, mdl string) map[string]string {
 func TestPublicOEMBox2Views(t *testing.T) {
 	for _, mdl := range []string{pubModelOwner, pubModelPublic} {
 		views := oemViews(t, mdl)
-		for _, v := range []string{"overtemp", "powertile", "power", "fancheck", "fanlock", "disclaimer", "ceiling", "curve", "bannertrue", "bannerfalse", "recovery", "presets", "confirm0", "confirm8"} {
+		for _, v := range []string{"overtemp", "powertile", "power", "fancheck", "fanlock", "disclaimer", "ceiling", "ocdisc", "ocbar", "curve", "bannertrue", "bannerfalse", "recovery", "presets", "confirm0", "confirm8"} {
 			if _, ok := views[v]; !ok {
 				t.Errorf("view %s not rendered: %v", v, views)
 			}
@@ -305,8 +309,8 @@ func TestPublicOEMBox2Views(t *testing.T) {
 				t.Errorf("Box II %s names the manufacturer (model %s): %s", k, mdl, v)
 			}
 		}
-		for k, want := range map[string]string{"overtemp": "The OEM firmware shut the hash boards down", "powertile": ">OEM spec</a>",
-			"fancheck": "Re-run the OEM fan test", "curve": "(the OEM firmware takes over at ", "pwsrc": "OEM spec ±5 %"} {
+		for k, want := range map[string]string{"overtemp": "The OEM firmware shut the hash boards down", "powertile": ">estimate</a>", "ocdisc": "On the first unit: 700 MHz gave about 2 % more hashrate for 2 % more power; above that, errors rose and efficiency got worse. Overclocking never improves efficiency; lowering clock/voltage does.",
+			"fancheck": "Re-run the OEM fan test", "curve": "(the OEM firmware takes over at ", "pwsrc": "measured on one unit", "power": "the OEM states 400 W and 260 W"} {
 			if !strings.Contains(views[k], want) {
 				t.Errorf("Box II %s: want %q in %s", k, want, views[k])
 			}

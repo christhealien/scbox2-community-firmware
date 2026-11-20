@@ -284,11 +284,11 @@ func sctRecover() {
 		chipTrimMu.Lock()
 		err := writeAtomic(chipTrimPath(), b, 0o644)
 		if err == nil {
-			os.Remove(strongBackup())
+			cfgRemove(strongBackup())
 		}
 		chipTrimMu.Unlock()
 		if err == nil {
-			os.Remove(strongResult())
+			cfgRemove(strongResult())
 			activity.emit("💪 strong-chip test: its result file was cut short (a power cut?): every chip is back to its trim from before the test")
 			sctLater(90*time.Second, func() { sctApplyRetry(15) })
 		}
@@ -297,7 +297,7 @@ func sctRecover() {
 	pending := rerr == nil && perr == nil && last["restore_pending"] == true
 	if rerr != nil || perr != nil || (last["running"] != true && !pending) {
 		if berr == nil {
-			os.Remove(strongBackup())
+			cfgRemove(strongBackup())
 		}
 		return
 	}
@@ -335,7 +335,7 @@ func sctRecover() {
 		err = os.WriteFile(chipTrimPath(), b, 0o644) // can't rewrite it: the backup, as before
 	}
 	if err == nil {
-		os.Remove(strongBackup())
+		cfgRemove(strongBackup())
 	}
 	chipTrimMu.Unlock()
 	if err != nil {
@@ -1065,7 +1065,7 @@ func (s *strongTestState) finish(how, msg string) {
 		}
 	} else {
 		chipTrimMu.Lock()
-		os.Remove(strongBackup())
+		cfgRemove(strongBackup())
 		chipTrimMu.Unlock()
 	}
 	// the clock window may have got lower during the test (capPlusTrims skips the trims while it runs): the "+" trims
@@ -1122,7 +1122,7 @@ func (s *strongTestState) restore() error {
 		err = os.WriteFile(chipTrimPath(), []byte(b.String()), 0o644)
 	}
 	if err == nil {
-		os.Remove(strongBackup())
+		cfgRemove(strongBackup())
 	}
 	return err
 }

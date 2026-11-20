@@ -24,7 +24,8 @@ func useBox2(t *testing.T) {
 	t.Helper()
 	model, modelWhy = profSCBox2, "test"
 	setWindowsFromModel()
-	t.Cleanup(func() { model, modelWhy = profSCLite, "test"; setWindowsFromModel() })
+	box2QuietUntil.Store(0) // (a revert's quiet time from another test)
+	t.Cleanup(func() { box2QuietUntil.Store(0); model, modelWhy = profSCLite, "test"; setWindowsFromModel() })
 }
 
 func TestR14Box2Parse(t *testing.T) {

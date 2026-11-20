@@ -1,7 +1,14 @@
 package main
 
-// SC Box II (planBox2V) parts of the clock-ceiling probe (commissioning C6, Feat.CeilingProbe) and the overclock
-// unlock (C7, Feat.OverclockUnlock). Both ship OFF; with the gates off nothing here changes anything:
+// SC Box II (planBox2V) parts of the clock-ceiling probe (C6, Feat.CeilingProbe) and the overclock unlock (C7,
+// Feat.OverclockUnlock). In the owner's build each is commissioned per unit; in the public release both are on
+// (publicFeatures). The rule is the same in both builds:
+//   - the probe steps the clock above 690 MHz on the chips' 12.5 MHz grid (ceilBox2Steps) up to box2OCHardMax
+//     (750 MHz), at the stock 7.67 V, and always goes back to the stock Hashrate plan;
+//   - its finished result is saved for this unit (box2-probe.json on the config store, box2ProbeResult);
+//   - the overclock unlock opens only once that result is clean past 690 MHz, and only up to it (box2ProbeLimit):
+//     no probe result, or a probe that failed at its first step, keeps the clock at 690 MHz.
+// With the gates off nothing here changes anything:
 //   - ceilBox2Window never opens (it needs Feat.CeilingProbe and the probe holding the charge);
 //   - box2OverclockErr only refuses (and is a no-op for the two stock plans);
 //   - freqHardMax stays the profile's FreqHardMax (690) unless OverclockUnlock is on (setWindowsFromModel).
@@ -10,9 +17,14 @@ package main
 // back. On the Box II that question is already answered by the disassembly: neither minerd (atoi of the plan's
 // "%d MHz") nor the gsscbox2 driver (vfff: atof, then a 10 MHz walk through the PLL table) caps the clock below
 // 1487.5 MHz, so a clamp probe would always report "no cap". What the Box II needs to know is how far its chips
-// hold while mining at the stock voltage level, so here each step is HELD while mining and judged by the panel's
-// guards: board temperature (abort tier), the hardware-error rate, and chip/board dropouts. The run always ends
-// on the baseline, which must be the stock Hashrate plan (690 MHz, V code 42): the stock plan is what it returns to.
+// hold while mining at the stock voltage, so here each step is HELD while mining and judged by the panel's
+// guards: board temperature (abort tier), the hardware-error rate, chip/board dropouts and the estimated wall
+// power (box2UnitWatts, 460 W). The run always ends on the baseline, which must be the stock Hashrate plan
+// (690 MHz, 7.67 V): the stock plan is what it returns to.
+//
+// Measured on the first unit (C6/C7): clean to 720 MHz (712.5 MHz on the chips), 725 MHz failed on HW errors
+// (23.8 %); 700 MHz gave about 2 % more hashrate for 2 % more power, and above that errors rose and efficiency
+// got worse (docs/HARDWARE.md).
 //
 // Clock writes go through ceilMutate (= mutatePlanGen → mutatePlanBox2), the same seam as every other clock
 // writer. The Box II clock backend behind Feat.ClockControl is lane C3's; this file only requires that it
@@ -23,14 +35,45 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 )
 
-// box2OCHardMax: the SC Box II overclock ceiling (MHz): variant_owner.go (the owner's commissioning build) and
-// variant_public.go (the public release: none, 0).
+// box2OCHardMax: the SC Box II's hard overclock cap (MHz), the same in both builds: the probe's top, and the most
+// any unlock can ever open (an unlock opens only up to this unit's own clean probe result, box2ProbeLimit).
+// Nothing in the driver or minerd range-checks the clock (the PLL alone goes to 1487.5 MHz), so this cap is
+// the panel's decision, not the software's.
+const box2OCHardMax = 750
 
-const ceilBox2Step = 10 // MHz: the driver walks the clock in 10 MHz requests; the plan carries whole MHz
+// ceilBox2Steps: the probe's clock requests above the stock window, one per 12.5 MHz chip-grid point (the chips
+// run floor(MHz ÷ 12.5) × 12.5, box2PLLClock): 700 → 700, 720 → 712.5, 725 → 725, 740 → 737.5, 750 → 750. The plan
+// carries whole MHz, so 712.5 and 737.5 are asked for as 720 and 740 (the requests the first unit was tested
+// with). Steps above the probe's top are left out (ceilBox2StepList).
+var ceilBox2Steps = []int{700, 720, 725, 740, 750}
+
+// ceilBox2PowerMaxW: the probe's power limit (W at the wall): a step whose wall power for this unit
+// (box2UnitWatts: a meter reading at that setting, else the estimate) is above it is not tried.
+const ceilBox2PowerMaxW = 460.0
+
+// ceilBox2StepList: the requests the probe makes between safe (exclusive) and hi (inclusive): ceilBox2Steps, then
+// hi itself when it is a chip-grid point past the last listed step (a top tightened off the list).
+func ceilBox2StepList(safe, hi int) []int {
+	var out []int
+	for _, v := range ceilBox2Steps {
+		if v > safe && v <= hi {
+			out = append(out, v)
+		}
+	}
+	last := float64(safe)
+	if len(out) > 0 {
+		last = float64(out[len(out)-1])
+	}
+	if hi > safe && box2PLLClock(float64(hi)) > box2PLLClock(last) && (len(out) == 0 || out[len(out)-1] != hi) {
+		out = append(out, hi)
+	}
+	return out
+}
 
 var (
 	ceilMutate    = mutatePlanGen  // the probe's clock writes (tests replace it with a fake miner backend)
@@ -109,7 +152,7 @@ func box2OverclockErr(p, before powerplan) error {
 
 // ceilBox2StartErr: the probe's start conditions that don't need the miner.
 func ceilBox2StartErr(acceptRisk bool) error {
-	if model.OCHardMax <= freqMax { // (the SC Box II: its overclock ceiling isn't decided, box2OCHardMax)
+	if model.OCHardMax <= freqMax { // (a profile with no overclock cap: box2OCHardMax is 750 on the SC Box II)
 		return fmt.Errorf("refused: the %s's overclock ceiling isn't decided, so nothing above %d MHz is probed", model.Name, freqMax)
 	}
 	if !model.Feat.ClockControl {
@@ -275,9 +318,10 @@ func ceilHeld() bool {
 	return ceilAbort.Load() || getCharge() != "ceiling" || genMoved(ceilGen.Load()) || miningHoldErr() != nil || !ceilAckOK()
 }
 
-// runCeilingProbeBox2: steps the clock from the stock window's top in ceilBox2Step steps up to the axis' HardMax,
-// keeping the baseline's V code, holding each step ceilBox2Hold while mining; the first step a guard fails
-// ends the run. The baseline (the stock Hashrate plan) is put back at the end, whatever happens (ceilFinish).
+// runCeilingProbeBox2: steps the clock from the stock window's top through ceilBox2StepList up to the axis'
+// HardMax, keeping the baseline's voltage, holding each step ceilBox2Hold while mining; the first step a guard
+// fails ends the run. The baseline (the stock Hashrate plan) is put back at the end, whatever happens
+// (ceilFinish). A finished run (not one stopped early) is saved as this unit's probe result (box2SaveProbe).
 func runCeilingProbeBox2(base powerplan) {
 	defer ceilFinish(base)
 	ceilMu.Lock()
@@ -293,17 +337,20 @@ func runCeilingProbeBox2(base powerplan) {
 	d0 := ceilDash()
 	g := &ceilGuards{start: ceilRead(d0)}
 	lastGood, failAt, why := ax.SafeMax, 0, ""
-	for v := ax.SafeMax + ax.Step; v-ax.Step < ax.HardMax; v += ax.Step {
-		if v > ax.HardMax { // a ceiling off the 10 MHz grid (725) is the last step itself
-			v = ax.HardMax
-		}
+	for _, v := range ceilBox2StepList(ax.SafeMax, ax.HardMax) {
 		if ceilHeld() {
 			ceilAbort.Store(true)
 			ceilLog("stopped (Stop, a safety stop, a mining hold or a re-lock)")
 			return
 		}
 		p := base
-		p.FreqMHz = v // the clock only: V code (and fans) stay the baseline's
+		p.FreqMHz = v // the clock only: the voltage (and fans) stay the baseline's
+		if w, src := box2UnitWatts(v, p.VrunMv); w > ceilBox2PowerMaxW {
+			// not tried: over the power limit before it runs (no power sensor to watch it while it runs)
+			failAt, why = v, fmt.Sprintf("power: %.0f W at the wall (%s) is over the %.0f W limit", w, src, ceilBox2PowerMaxW)
+			ceilLog("%d MHz not tried — %s", v, why)
+			break
+		}
 		ceilSetAxis(0, func(a *ceilingAxis) { a.At = v })
 		ceilMarkTesting(p)
 		applied, refused, err := ceilApply(p)
@@ -314,7 +361,7 @@ func runCeilingProbeBox2(base powerplan) {
 			ceilAbort.Store(true)
 			return
 		}
-		ceilLog("%d MHz applied (%s): holding %s", v, box2LevelText(p.VrunMv), ceilBox2Hold)
+		ceilLog("%d MHz applied (the chips run %g MHz, %s): holding %s", v, box2PLLClock(float64(v)), box2LevelText(p.VrunMv), ceilBox2Hold)
 		step := ceilRead(ceilDash())
 		until := time.Now().Add(ceilBox2Hold)
 		for why == "" {
@@ -340,12 +387,88 @@ func runCeilingProbeBox2(base powerplan) {
 	var note string
 	switch {
 	case failAt > 0 && lastGood > ax.SafeMax:
-		note = fmt.Sprintf("held clean up to %d MHz at the stock voltage; %d MHz failed (%s). Don't set the clock above %d MHz, and test any clock above %d MHz yourself with a long run (TEST-C7)", lastGood, failAt, why, lastGood, ax.SafeMax)
+		note = fmt.Sprintf("held clean up to %d MHz at the stock voltage; %d MHz failed (%s). The overclock unlock opens up to %d MHz on this unit; a short hold is not a soak: run any clock above %d MHz for hours before you keep it", lastGood, failAt, why, lastGood, ax.SafeMax)
 	case failAt > 0:
-		note = fmt.Sprintf("the first step past the stock window, %d MHz, failed (%s): this unit has no clock headroom at the stock voltage — keep it at %d MHz", failAt, why, ax.SafeMax)
+		note = fmt.Sprintf("the first step past the stock window, %d MHz, failed (%s): this unit has no clock headroom at the stock voltage, so it stays at %d MHz (the overclock unlock stays closed)", failAt, why, ax.SafeMax)
 	default:
-		note = fmt.Sprintf("every step up to %d MHz held clean for %s at the stock voltage. A short hold is not a soak: run any clock above %d MHz for hours before you keep it (TEST-C7)", lastGood, ceilBox2Hold, ax.SafeMax)
+		note = fmt.Sprintf("every step up to %d MHz held clean for %s at the stock voltage; the overclock unlock opens up to %d MHz on this unit. A short hold is not a soak: run any clock above %d MHz for hours before you keep it", lastGood, ceilBox2Hold, lastGood, ax.SafeMax)
 	}
 	ceilSetAxis(0, func(a *ceilingAxis) { a.State = "done"; a.Cap = lastGood; a.At = 0; a.Note = note })
 	ceilLog("result: %s", note)
+	r := box2ProbeRecord{Cap: lastGood, FailAt: failAt, Why: why, Top: ax.HardMax, Level: base.VrunMv,
+		HoldS: int(ceilBox2Hold / time.Second), At: time.Now().UTC().Format(time.RFC3339)}
+	if err := box2SaveProbe(r); err != nil {
+		ceilLog("the result couldn't be saved (%s): the overclock unlock follows the result saved before, if any", cfgSaveErr(err))
+		activity.emit("⚠ clock ceiling probe: the result couldn't be saved: " + cfgSaveErr(err))
+	} else {
+		activity.emit(fmt.Sprintf("📐 clock ceiling probe: clean up to %d MHz on this unit (saved)", lastGood))
+	}
+}
+
+// ---- this unit's probe result (C6), which bounds the overclock unlock (C7) ----
+
+// box2ProbeRecord: the last finished probe on this unit. A probe stopped early (Stop, a safety stop, a hold, a
+// re-lock) saves nothing: the result saved before stays.
+type box2ProbeRecord struct {
+	Cap    int    `json:"cap"`               // the highest clean step (MHz requested); = 690 when the first step failed
+	FailAt int    `json:"fail_at,omitempty"` // the step that failed (0: none, every step held)
+	Why    string `json:"why,omitempty"`     // why it failed
+	Top    int    `json:"top"`               // the probe's top (MHz)
+	Level  int    `json:"level"`             // the voltage level the steps ran at (the stock 7.67 V)
+	HoldS  int    `json:"hold_s"`            // how long each step was held
+	At     string `json:"at"`                // when (RFC 3339, UTC)
+}
+
+// box2ProbePath: on the config store next to auth.json: a setting of this unit (committed to the flash when
+// written, cfgWrite), not in the settings export (settingsSections), and wiped with the rest by a fresh image.
+func box2ProbePath() string { return filepath.Join(filepath.Dir(*authFile), "box2-probe.json") }
+
+// box2SaveProbe stores the result through the config write path (cfgWrite: crash-safe on the FAT, with a .bak,
+// and committed to the flash at once on v0.5.2's read-only flash).
+func box2SaveProbe(r box2ProbeRecord) error {
+	b, _ := json.MarshalIndent(r, "", " ")
+	return cfgWrite(box2ProbePath(), b, 0o644)
+}
+
+// box2ProbeResult: this unit's saved probe result; ok=false when there is none (or it's unreadable).
+func box2ProbeResult() (box2ProbeRecord, bool) {
+	var r box2ProbeRecord
+	b, ok := readConfig(box2ProbePath(), json.Valid)
+	if !ok || json.Unmarshal(b, &r) != nil || r.Cap <= 0 {
+		return box2ProbeRecord{}, false
+	}
+	return r, true
+}
+
+// box2ProbeLimit: the most the overclock unlock may open on this unit: its saved probe result's clean top, never
+// above box2OCHardMax (750 MHz); FreqMax (690) when there is no result or the first step failed.
+func box2ProbeLimit() int {
+	r, ok := box2ProbeResult()
+	if !ok || r.Cap <= model.FreqMax {
+		return model.FreqMax
+	}
+	return min(r.Cap, max(model.OCHardMax, model.FreqMax))
+}
+
+// box2UnlockErr: why the overclock unlock can't open on this unit ("" = it can): no probe result yet, or one
+// that found no headroom.
+func box2UnlockErr() string {
+	r, ok := box2ProbeResult()
+	switch {
+	case !ok:
+		return fmt.Sprintf("run the clock ceiling probe first (Controls → Probe the clock ceiling): the clock limit opens only up to what this unit's own probe held clean, never above %d MHz, and this unit has no probe result yet", model.OCHardMax)
+	case r.Cap <= model.FreqMax:
+		return fmt.Sprintf("this unit's probe found no headroom (%d MHz failed: %s), so the clock stays at %d MHz", r.FailAt, r.Why, model.FreqMax)
+	}
+	return ""
+}
+
+// box2ProbeView: the saved result for the page (nil when none).
+func box2ProbeView() map[string]any {
+	r, ok := box2ProbeResult()
+	if !ok {
+		return nil
+	}
+	return map[string]any{"cap": r.Cap, "fail_at": r.FailAt, "why": r.Why, "top": r.Top, "hold_s": r.HoldS, "at": r.At,
+		"limit": box2ProbeLimit(), "volts": box2LevelText(r.Level)}
 }

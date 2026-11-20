@@ -42,7 +42,9 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sclite-agent/internal/cfgwin"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -664,9 +666,15 @@ type updMarker struct {
 	At   int64  `json:"at"`
 }
 
+// writeLast: the last update's result note (Settings -> Firmware update). Through the config write path (cfgWrite):
+// on the SC Box II with its settings in RAM a plain write would be lost at the reboot that follows (the post-boot
+// check's result too).
 func writeLast(result, from, to, note string) {
 	b, _ := json.Marshal(map[string]any{"result": result, "from": from, "to": to, "at": time.Now().Unix(), "note": note})
-	os.WriteFile(filepath.Join(updDir(), "last.json"), b, 0o644)
+	os.MkdirAll(updDir(), 0o755)
+	if err := cfgWrite(filepath.Join(updDir(), "last.json"), b, 0o644); err != nil {
+		log.Printf("update: could not save the result note: %v", err)
+	}
 }
 
 // rootRW: the system partition is mounted read-only (the OEM's inittab remounts / ro at boot); make it
@@ -743,8 +751,21 @@ func rebootCmd() string {
 	if c := os.Getenv(brandEnv("REBOOT")); c != "" {
 		return c
 	}
+	if model.Plan == planBox2V {
+		// (v0.5.6) an owner's update hung at its reboot for over 4 minutes, until a power cycle: the OEM's shutdown
+		// scripts can stall. With the settings in RAM and the partition read-only (cfgshadow.go), everything to keep
+		// is on the flash already (markCleanReboot's checkpoint, then sync): an immediate reboot loses nothing.
+		// Otherwise the normal reboot, forced if it hasn't happened 90 s later.
+		if cfgShadow() && box2FlashRO() {
+			return "reboot -f"
+		}
+		return "reboot; sleep 90; sync; reboot -f"
+	}
 	return "reboot"
 }
+
+// box2FlashRO: the settings partition is mounted read-only now; a test seam.
+var box2FlashRO = cfgwin.FlashReadOnly
 
 func selfSize() int64 {
 	if st, err := os.Stat(selfExe()); err == nil {
@@ -810,6 +831,23 @@ func installHandoff(file string) error {
 		os.Remove(dst)
 	}()
 	return nil
+}
+
+// writeJSONHandoff: the answer to an install that installHandoff just started, sent whole right now (a set length,
+// flushed, the connection closed after it): the exec 800 ms later closes every socket of this process, and an answer
+// still waiting in a buffer then never reaches the page (it showed no install progress at all).
+func writeJSONHandoff(w http.ResponseWriter, v any) {
+	b, _ := json.Marshal(v)
+	b = append(b, '\n')
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(b)))
+	h.Set("Connection", "close")
+	h.Set("Cache-Control", "no-store")
+	w.Write(b)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // runInstallUpdate: "sclite-agent -install-update FILE" (the panel's copy in RAM). Installs FILE, then reboots.
@@ -1579,7 +1617,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 			activity.emit("⬆ installing firmware update " + v + ": the miner reboots when it's done")
 			recordMark("RB", "firmware update "+v)
 			markReboot(150*time.Second, 6*time.Minute, "Installing firmware "+v+": the miner is rebooting.")
-			writeJSON(w, map[string]any{"ok": true, "note": "installing " + v + ": the miner reboots when it's done"})
+			writeJSONHandoff(w, map[string]any{"ok": true, "note": "installing " + v + ": the miner reboots when it's done"})
 			return
 		}
 		m, err := installUpdate(updateStage)

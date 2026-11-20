@@ -13,13 +13,13 @@ import (
 
 var groomCtrlFuncs = []string{"renderControl", "ctrlWarn", "applyControl", "cclamp", "cstep", "lockBar", "hesc",
 	"calNote", "estW", "boxVoltsTxt", "B2T", "b2VC", "b2Levels", "b2RuleLevel", "b2VoltCtl", "b2VOpts", "b2F4Note",
-	"b2Name", "chargeTxt", "b2ModeAt", "b2SelTxt", "imgDot", "imgMore"}
+	"b2Name", "chargeTxt", "b2ModeAt", "b2SelTxt", "imgDot", "imgMore", "b2OCBar", "b2EstW", "b2TopLevel"}
 
 const groomStubs = `
 const BOX_V_MEAS={42:7.67,43:7.61,44:7.58,45:7.55,46:7.52,61:7.03};
 globalThis.document={getElementById:id=>E[id]||null,querySelectorAll:()=>[],querySelector:()=>null};
 globalThis.confirm=m=>{globalThis._conf=m;return true;};
-globalThis.toast=()=>{};globalThis.loadControl=()=>{};globalThis.setTimeout=()=>{};
+globalThis.toast=()=>{};globalThis.loadControl=()=>{};globalThis.setTimeout=()=>{};globalThis.ocProbeRefresh=()=>{};
 let SENT=null;async function jpost(u,b){SENT=b;return {j:{ok:true,applied:'x'}};}
 let CTRL=null;
 const box2Ctrl=vc=>({ok:true,manual:true,select:0,current:{freq_mhz:690,vrun_mv:42,pv_mv:0,fan1:50,fan2:41},
@@ -157,7 +157,7 @@ func between(s, a, b string) string {
 // The tuner form and its review on Box II: every voltage is picked in volts (the value sent is the level),
 // "Highest voltage" feeds min_mv (the level-42 end) and "Lowest voltage" max_mv (the level-61 end), the step is
 // a voltage step; nothing shows a level. The SC Lite form keeps its PV fields.
-var groomTunerFuncs = []string{"renderTunerForm", "tunerWizUI", "modeVal", "baseVal", "fanVal", "updateEstimate", "estHours",
+var groomTunerFuncs = []string{"renderTunerForm", "tunerWizUI", "modeVal", "baseVal", "fanVal", "updateEstimate", "estHours", "tClockN",
 	"tunerCfg", "TGAP", "B2T", "boxVoltsTxt", "b2VOpts", "b2StepOpts", "b2StepTxt", "tB2Hint", "tTrimCost", "hesc", "modelName",
 	"tunerReview", "planParamsHtml", "tB2Note", "imgDot", "imgMore", "b2Split", "b2More"}
 

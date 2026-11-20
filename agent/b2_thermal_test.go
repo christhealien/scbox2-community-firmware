@@ -28,7 +28,9 @@ func useModel(t *testing.T, p modelProfile) {
 	model, modelWhy = p, "test"
 	setWindowsFromModel()
 	setThermalFromModel()
+	box2QuietUntil.Store(0) // (a revert's quiet time from another test)
 	t.Cleanup(func() {
+		box2QuietUntil.Store(0)
 		model, modelWhy = profSCLite, "test"
 		setWindowsFromModel()
 		setThermalFromModel()

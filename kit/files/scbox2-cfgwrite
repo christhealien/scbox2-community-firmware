@@ -1,0 +1,10 @@
+#!/bin/sh
+# scbox2: save files of the settings (the RAM copy at /mnt/config) onto the settings partition.
+#
+#   cfgwrite REL...     REL: a file or folder relative to /mnt/config (e.g. scbox2/mac, random-seed)
+#
+# The partition is read-only while the miner runs (see /usr/libexec/scbox2/cfgmount); this opens a short write window:
+# remount read-write, write each file crash-safely (a temp file, the old copy kept as .bak, rename, sync), remount
+# read-only. A file gone from RAM is removed from the partition. One window at a time, shared with the panel and the
+# SSH server. Exit 0: saved (or nothing to save); 1: not saved (the reason on stderr).
+exec /usr/bin/scbox2-fatfix commit "$@" 1>&2

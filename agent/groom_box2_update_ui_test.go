@@ -12,7 +12,7 @@ import (
 
 var groomUpdFuncs = []string{"renderUpdate", "renderImageUpdate", "imgStep", "imgAckAll", "imgAckUI", "imgShowLatest",
 	"updWarnHTML", "updSumsHTML", "updShowLatest", "updMigHTML", "updWhen", "hesc", "modelName",
-	"imgConfirmHTML", "imgRecoverHTML", "imgDot", "imgMore", "imgDots", "imgChainHTML", "imgChainShow", "imgQAll", "imgQUI", "imgQuick", "imgPwHTML", "imgPw", "updProgSet", "updProgSave", "updProgGet", "updProgHTML", "updProgInSettings", "startUpdTick", "stopUpdTick"}
+	"imgConfirmHTML", "imgRecoverHTML", "imgDot", "imgMore", "imgDots", "imgChainHTML", "imgChainShow", "imgQAll", "imgQUI", "imgQuick", "imgPwHTML", "imgPw", "updInstallGoing", "updProgSet", "updProgSave", "updProgGet", "updProgHTML", "updProgInSettings", "startUpdTick", "stopUpdTick"}
 
 const groomUpdStubs = `
 globalThis.document={getElementById:id=>E[id]||null,querySelectorAll:()=>[],querySelector:()=>null};
@@ -159,7 +159,7 @@ func TestGroomBox2UpdateSteps(t *testing.T) {
 		t.Errorf("Download and install: disabled until all four are ticked: Q3=%s Q4=%s", groomCase(out, "CARD", "Q3"), groomCase(out, "CARD", "Q4"))
 	}
 	for _, c := range []struct{ name, calls, chain, want string }{
-		{"CH_OK", "fetch,verify,install+ack", `"stage":3`, "The miner is writing the new system"},
+		{"CH_OK", "fetch,verify,install+ack", `"stage":3`, "Updating the firmware to v0.5.0"},
 		{"CH_TICKS", "", "null", "① Get the update file"},
 		{"CH_FETCH", "fetch", `"stage":0`, "The download didn’t work: can’t reach GitHub: timeout."},
 		{"CH_MISMATCH", "fetch,verify", `"stage":1`, "The downloaded file doesn’t match the official release. Don’t install it."},
@@ -174,8 +174,9 @@ func TestGroomBox2UpdateSteps(t *testing.T) {
 		if !strings.Contains(ch, c.chain) || !strings.Contains(h, c.want) {
 			t.Errorf("%s: chain %s; page lacks %q:\n%s", c.name, ch, c.want, h)
 		}
-		if c.name == "CH_OK" && !strings.Contains(h, `id="imginst" onclick="imgInstall()" disabled`) {
-			t.Errorf("after the one-click install started, step ③'s Install must stay disabled:\n%s", h)
+		// (the install's progress takes the steps' place: no Install button left to press mid-install)
+		if c.name == "CH_OK" && (strings.Contains(h, `id="imginst"`) || !strings.HasPrefix(h, "<!--updprog-->")) {
+			t.Errorf("after the one-click install started, Settings shows its progress in place of the steps:\n%s", h)
 		}
 		failed := c.name != "CH_OK" && c.name != "CH_TICKS"
 		if failed != strings.Contains(h, "Nothing was written to the miner.") || failed != strings.Contains(ch, `"err"`) {

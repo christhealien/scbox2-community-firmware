@@ -127,7 +127,8 @@ var profSCLite = modelProfile{
 
 // SC Box II: figures from its stock 2.2.1 rootfs (product.json, mcbversion, cpbsetting.json, intminer
 // strings). Clock window = the stock plans only (525 / 690 MHz); every control feature stays off until
-// measured on real hardware. Cut-off 86 (never raised); heat-guard 82 (-4); abort-max 84 (-2); target 77.
+// measured on real hardware. Cut-off 86 (never raised); heat-guard 82 (-4); abort-max 84 (-2); target 77 (the fan
+// curve's; the tuner's fan hold is capped at 74, box2HoldMaxC in tuner_box2.go).
 var profSCBox2 = modelProfile{
 	ID: "scbox2", Name: "SC Box II", StockModel: stockModelSCBox2, MCB: "MCB_V6_3_5", InitLogTag: "SCBOX2",
 	Boards: 1, ChipsPerBoard: 36, ChipModel: "ICT580", StagePairs: true,
@@ -137,8 +138,8 @@ var profSCBox2 = modelProfile{
 	// pll params(55.2.0)"): from 500 MHz up a chip runs 12.5 MHz x N, rounding a request DOWN (510 -> 500,
 	// 530 -> 525, 690 -> 687.5). Measured on the owner's unit (lane C8); below 500 the dividers change.
 	FreqMin: 525, FreqMax: 690, FreqHardMax: 690, ClockStep: 12.5, Plan: planBox2V,
-	// OCHardMax: the overclock ceiling is NOT decided for the SC Box II (box2OCHardMax = 0, ceilingbox2.go), so the
-	// clock-ceiling probe (C6) and the overclock unlock (C7) refuse anything above 690 MHz.
+	// OCHardMax: the hard overclock cap (box2OCHardMax = 750, ceilingbox2.go), in both builds: the clock-ceiling
+	// probe's (C6) top; the overclock unlock (C7) opens only up to this unit's clean probe result, never above it.
 	OCHardMax: box2OCHardMax,
 	Box2Plans: []box2Tuple{{FreqMHz: 690, V: 42}, {FreqMHz: 525, V: 61}},
 	Feat:      modelFeatures{}, // every control feature OFF
@@ -379,7 +380,7 @@ func box2Field4(cur map[string]any, p powerplan) (int, bool) {
 			val, at, ok = q.Fan2, q.FreqMHz, true
 		}
 	}
-	if !ok && p.FreqMHz > model.FreqMax && !publicBuild && model.OCHardMax > model.FreqMax {
+	if !ok && p.FreqMHz > model.FreqMax && model.OCHardMax > model.FreqMax {
 		// C6/C7, above the stock window (box2OverclockErr: at the Hashrate plan's V code): that plan's own value
 		hf, _ := box2HashrateV()
 		if hf != p.FreqMHz {
@@ -543,6 +544,22 @@ func validateControlBox2(p powerplan) error {
 // the running plan, refuses anything that is not a stock tuple, and writes the plan back using the stock
 // plan's own V trim text. It never invents a voltage/PV and never writes a non-stock clock.
 func mutatePlanBox2(mut func(*powerplan), wake bool, gen int64) (string, error) {
+	return mutatePlanBox2Co(mut, wake, gen, nil)
+}
+
+// mutatePlanGenCoop: mutatePlanGen for a writer that keeps working while its clock/V write is confirmed (the
+// tuner: box2Coop). Only the SC Box II confirms writes; elsewhere it is mutatePlanGen.
+func mutatePlanGenCoop(gen int64, mut func(*powerplan), co *box2Coop) (string, error) {
+	if model.Plan != planBox2V {
+		return mutatePlanGen(gen, mut)
+	}
+	return mutatePlanBox2Co(mut, true, gen, co)
+}
+
+// mutatePlanBox2Co: mutatePlanBox2 with the confirmation's cooperative work (co, nil: none).
+func mutatePlanBox2Co(mut func(*powerplan), wake bool, gen int64, co *box2Coop) (string, error) {
+	box2Writing.Add(1) // (from before its PUT to its confirmation's start: box2ClockQuietNow)
+	defer box2Writing.Add(-1)
 	plan, want, err := mutatePlanBox2Write(mut, wake, gen)
 	if err != nil || want == nil {
 		return plan, err
@@ -552,10 +569,11 @@ func mutatePlanBox2(mut func(*powerplan), wake bool, gen int64) (string, error) 
 	// (wake=false: the thermal throttle) can't wait: theirs is confirmed in the background.
 	if !wake {
 		box2AsyncConfirms.Add(1)
-		go func() { defer box2AsyncConfirms.Done(); box2Confirm(*want) }()
+		box2Writing.Add(1)
+		go func() { defer box2AsyncConfirms.Done(); defer box2Writing.Add(-1); box2Confirm(*want) }()
 		return plan, nil
 	}
-	if err := box2Confirm(*want); err != nil {
+	if err := box2ConfirmCoop(*want, co); err != nil {
 		return "", err
 	}
 	return plan, nil

@@ -136,7 +136,7 @@ func TestB3Box2SoftIdleOffIsConservativeDefault(t *testing.T) {
 	if called {
 		t.Fatal("the unproven pgadisable must NOT be sent when SoftIdle is off")
 	}
-	if !strings.Contains(err.Error(), idleActionUnprovenMsg) {
+	if !hasBackstopCaveat(err.Error()) {
 		t.Fatalf("degrade error must carry the backstop caveat; got %q", err.Error())
 	}
 	// fans forced to 100 %
@@ -158,7 +158,7 @@ func TestB3Box2IdleDegradesWhenAPIDown(t *testing.T) {
 	if err == nil {
 		t.Fatal("API down: idleAction must return an error, not a silent no-op")
 	}
-	if !strings.Contains(err.Error(), idleActionUnprovenMsg) || !strings.Contains(err.Error(), "100%") {
+	if !hasBackstopCaveat(err.Error()) || !strings.Contains(err.Error(), "100%") {
 		t.Fatalf("degrade message must mention fans 100%% and the backstop caveat; got %q", err.Error())
 	}
 	assertFansMax(t)
@@ -181,7 +181,7 @@ func TestB3Box2IdleDegradesOnBoardRefusal(t *testing.T) {
 	if err == nil {
 		t.Fatal("a board refusing the stop must degrade (not report success)")
 	}
-	if !strings.Contains(err.Error(), idleActionUnprovenMsg) {
+	if !hasBackstopCaveat(err.Error()) {
 		t.Fatalf("partial-failure error must carry the backstop caveat; got %q", err.Error())
 	}
 	assertFansMax(t)
@@ -387,4 +387,10 @@ func assertFansMax(t *testing.T) {
 			t.Fatalf("%s sysfs level was written directly (%d): fans go through the stock plan only", f, v)
 		}
 	}
+}
+
+// hasBackstopCaveat: the degrade message carries the backstop caveat: the owner's build's unproven-stop note, or the
+// public release's own wording (its stop is a tested feature, the caveat is just the cut-off).
+func hasBackstopCaveat(s string) bool {
+	return strings.Contains(s, idleActionUnprovenMsg) || (publicBuild && strings.Contains(s, "stays the backstop"))
 }

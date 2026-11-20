@@ -412,9 +412,9 @@ func saveAuth() error {
 	if err := os.Rename(tmp, *authFile); err != nil {
 		return err
 	}
-	fsyncDir(filepath.Dir(*authFile)) // the rename reaches the FAT before we report success (RV5 F2)
-	authSeen(b)                       // (sshd_link.go: only someone else's change is reloaded)
-	return nil
+	fsyncDir(filepath.Dir(*authFile))  // the rename reaches the FAT before we report success (RV5 F2)
+	authSeen(b)                        // (sshd_link.go: only someone else's change is reloaded)
+	return cfgCommitWritten(*authFile) // the Box II: onto the flash (cfgshadow.go)
 }
 
 // writeFileSync writes and fsyncs, so a power cut can't leave an empty file behind a rename.
@@ -425,10 +425,19 @@ func saveAuth() error {
 // store has no journal, so writeAtomic routes to fatWrite, which also keeps a .bak and fsyncs the directory
 // (see fatstore.go). On SC Lite's ext configFAT is false and this is byte-for-byte the pre-port behaviour.
 func writeAtomic(path string, b []byte, mode os.FileMode) error {
-	if configFAT {
-		return fatWrite(path, b, mode)
+	if err := cfgFault(path); err != nil {
+		return err
 	}
-	return writeAtomicPlain(path, b, mode)
+	var err error
+	if configFAT {
+		err = fatWrite(path, b, mode)
+	} else {
+		err = writeAtomicPlain(path, b, mode)
+	}
+	if err != nil {
+		return cfgNoteErr(path, err)
+	}
+	return cfgCommitWritten(path) // the Box II: the RAM copy onto the flash (cfgshadow.go)
 }
 
 // writeAtomicPlain is the original (pre-port) atomic write: temp+fsync, then rename over. Used directly on
@@ -593,6 +602,10 @@ func requireAuth(h http.HandlerFunc) http.HandlerFunc {
 		authMu.RUnlock()
 		if mc && r.URL.Path != "/api/passwd" && r.URL.Path != "/api/acknowledge" {
 			http.Error(w, `{"error":"set a new password first"}`, http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			cfgUserSave(func() { h(w, r) }) // the Box II: what the change wrote, onto the flash (cfgshadow.go)
 			return
 		}
 		h(w, r)
@@ -1177,7 +1190,7 @@ func handleDisplay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := saveHashUnit(in.HashUnit); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "hash_unit": in.HashUnit})
@@ -1188,7 +1201,7 @@ func handleDisplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := saveShareUnit(in.ShareUnit); err != nil {
-		writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "share_unit": in.ShareUnit})
@@ -1201,7 +1214,7 @@ func handleDisplay(w http.ResponseWriter, r *http.Request) {
 func softRestartMining() error {
 	markCleanReboot()
 	if _, err := stockReq("PUT", "/mcb/restart", []byte{}); err != nil {
-		os.Remove(recCleanPath())
+		cfgRemove(recCleanPath())
 		return err
 	}
 	return nil
@@ -1248,7 +1261,10 @@ func handleAck(w http.ResponseWriter, r *http.Request) {
 	}
 	when := auth.Acknowledged
 	authMu.Unlock()
-	_ = saveAuth()
+	if err := saveAuth(); err != nil { // (accepted in memory all the same)
+		writeJSON(w, map[string]any{"ok": false, "acknowledged": when, "err": "accepted until the panel restarts, but " + cfgSaveErr(err)})
+		return
+	}
 	writeJSON(w, map[string]any{"ok": true, "acknowledged": when})
 }
 
@@ -1358,7 +1374,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // ===================== stock API client =====================
 
-func cgminerCmd(command string) ([]byte, error) {
+func cgminerCmd(command string) (out []byte, err error) {
+	defer apiSlot()()
+	end := traceRead("api " + command)
+	defer func() { end(err) }()
 	d := net.Dialer{Timeout: *apiTimeout}
 	conn, err := d.Dial("tcp", *apiAddr)
 	if err != nil {
@@ -1658,6 +1677,7 @@ type dashboard struct {
 	Health     []boardHealth      `json:"board_health,omitempty"`       // per-board start-up chips, re-inits, dropped results (boardhealth.go)
 	Unexpected *unexpectedRestart `json:"unexpected_restart,omitempty"` // restarted without the panel asking (recovery.go)
 	OverTemp   *overTempState     `json:"over_temp,omitempty"`          // the OEM shut the boards down for heat (overtemp.go)
+	CfgStore   *cfgStoreState     `json:"cfg_store,omitempty"`          // settings can't be saved / the storage is damaged (fatstore.go)
 }
 
 var (
@@ -1721,18 +1741,34 @@ func smoothVolt(id int, v float64) float64 {
 	return vals[len(vals)/2]
 }
 
+// buildDashboard: the Live reading. On the SC Box II while a clock/voltage write is being confirmed, one shared
+// reading (dashshare.go); everywhere else (and on the SC Box II otherwise) a fresh one, as before.
 func buildDashboard() dashboard {
+	if model.Plan == planBox2V {
+		return dashShareRead(dashShareAge, dashShareForce)
+	}
+	return buildDashboardNow()
+}
+
+// buildDashboardNow: a fresh Live reading (the miner API's summary and devs).
+func buildDashboardNow() dashboard {
 	d := buildDashboard0()
+	dashDecorate(&d)
+	return d
+}
+
+// dashDecorate: the panel's own state added to a reading (no miner-API command, no backend request).
+func dashDecorate(d *dashboard) {
 	if s, ok := loadFanLock(); ok {
 		d.FanLock = &s
 	}
 	d.Health = boardHealthView()
-	if t, _, ok := maxBoardTemp(d); ok {
+	if t, _, ok := maxBoardTemp(*d); ok {
 		noteHottest(t)
 	}
 	d.Unexpected = unexpectedForDashboard()
 	d.OverTemp = overTempView()
-	return d
+	d.CfgStore = cfgStoreWatch()
 }
 
 func buildDashboard0() dashboard {
@@ -1797,51 +1833,10 @@ func buildDashboard0() dashboard {
 		return dashboard{OK: false, Err: "The mining software gave an answer the panel couldn't read. This page updates by itself."}
 	}
 	if vRaw, err := cgminerCmd("devs"); err == nil {
-		if devs, ok := apiEntries(vRaw, "DEVS"); ok {
-			for _, dev := range devs { // (each entry read from the one parse: not the whole reply again per board)
-				id := apiInt(dev, "ID")
-				ghs := apiNum(dev, "MHS av") / 1000.0
-				if r := currentMHSOf(dev); r > 0 {
-					ghs = r / 1000.0
-				}
-				if w, ok := workOfEntry(dev, "DEVS"); ok {
-					if g, ok := liveWork.rate(fmt.Sprintf("dev%d", id), w); ok {
-						ghs = g // 0 for a board that is listed Alive but has stopped doing work
-					}
-				}
-				bd := board{
-					ID: id, Alive: apiStr(dev, "Status") == "Alive", Enabled: apiStr(dev, "Enabled") == "Y",
-					GHS: ghs, HWErrors: apiInt(dev, "Hardware Errors"), HWPct: apiNum(dev, "Device Hardware%"),
-					ClockMHz: apiNum(dev, "clock"),
-					Temps:    []float64{apiNum(dev, "tstemp-0"), apiNum(dev, "tstemp-1"), apiNum(dev, "tstemp-2")},
-					Fans:     boardFanRPMs(dev),
-					Overheat: apiNum(dev, "overheat") != 0, Nonced: apiInt(dev, "Nonced"),
-				}
-				if model.Plan == planBox2V {
-					// Box II: "voltage" is the plan's PWM trim LEVEL, not a board millivolt reading. Do not
-					// divide by 1000, smooth it, or let it reach the power model (power.go gates on VoltageV);
-					// carry the raw level for display only.
-					bd.VoltLevel = apiInt(dev, "voltage")
-					// a disabled board (stop hashing / idle) is de-initialised: the miner stops reading its chips and
-					// keeps reporting their last temperature (70 °C for ever, seen on hardware). Only the board
-					// sensor (tstemp-2) is live then.
-					if !bd.Enabled {
-						bd.Temps[0], bd.Temps[1] = 0, 0
-					}
-				} else {
-					bd.VoltageV = smoothVolt(id, apiNum(dev, "voltage")/1000.0)
-				}
-				d.Boards = append(d.Boards, bd)
-			}
-			sort.SliceStable(d.Boards, func(i, j int) bool { return d.Boards[i].ID < d.Boards[j].ID }) // board 0, 1, 2, 3
+		if bs, sum, ok := dashBoardsOf(vRaw); ok {
+			d.Boards = bs
 			// the Live hashrate is the boards' own figures added up: the miner's total lags behind them for
 			// the first minutes after a (re)start (787 GH/s while its boards made 3.7 TH/s)
-			var sum float64
-			for _, b := range d.Boards {
-				if b.Alive {
-					sum += b.GHS
-				}
-			}
 			if sum > 0 {
 				d.GHS = sum
 			}
@@ -1857,6 +1852,57 @@ func buildDashboard0() dashboard {
 	d.BestShareT = fmtShareUnit(d.BestShare)
 	d.InCharge = chargeLabel()
 	return d
+}
+
+// dashBoardsOf: the boards of a devs reply (sorted by ID) and the hashrate of those alive added up. ok=false: no
+// DEVS section.
+func dashBoardsOf(vRaw []byte) (out []board, sum float64, ok bool) {
+	devs, ok := apiEntries(vRaw, "DEVS")
+	if !ok {
+		return nil, 0, false
+	}
+	for _, dev := range devs { // (each entry read from the one parse: not the whole reply again per board)
+		id := apiInt(dev, "ID")
+		ghs := apiNum(dev, "MHS av") / 1000.0
+		if r := currentMHSOf(dev); r > 0 {
+			ghs = r / 1000.0
+		}
+		if w, ok := workOfEntry(dev, "DEVS"); ok {
+			if g, ok := liveWork.rate(fmt.Sprintf("dev%d", id), w); ok {
+				ghs = g // 0 for a board that is listed Alive but has stopped doing work
+			}
+		}
+		bd := board{
+			ID: id, Alive: apiStr(dev, "Status") == "Alive", Enabled: apiStr(dev, "Enabled") == "Y",
+			GHS: ghs, HWErrors: apiInt(dev, "Hardware Errors"), HWPct: apiNum(dev, "Device Hardware%"),
+			ClockMHz: apiNum(dev, "clock"),
+			Temps:    []float64{apiNum(dev, "tstemp-0"), apiNum(dev, "tstemp-1"), apiNum(dev, "tstemp-2")},
+			Fans:     boardFanRPMs(dev),
+			Overheat: apiNum(dev, "overheat") != 0, Nonced: apiInt(dev, "Nonced"),
+		}
+		if model.Plan == planBox2V {
+			// Box II: "voltage" is the plan's PWM trim LEVEL, not a board millivolt reading. Do not
+			// divide by 1000, smooth it, or let it reach the power model (power.go gates on VoltageV);
+			// carry the raw level for display only.
+			bd.VoltLevel = apiInt(dev, "voltage")
+			// a disabled board (stop hashing / idle) is de-initialised: the miner stops reading its chips and
+			// keeps reporting their last temperature (70 °C for ever, seen on hardware). Only the board
+			// sensor (tstemp-2) is live then.
+			if !bd.Enabled {
+				bd.Temps[0], bd.Temps[1] = 0, 0
+			}
+		} else {
+			bd.VoltageV = smoothVolt(id, apiNum(dev, "voltage")/1000.0)
+		}
+		out = append(out, bd)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID }) // board 0, 1, 2, 3
+	for _, b := range out {
+		if b.Alive {
+			sum += b.GHS
+		}
+	}
+	return out, sum, true
 }
 
 var (
@@ -2258,7 +2304,7 @@ func handlePools(w http.ResponseWriter, r *http.Request) {
 			}
 			body, _ := json.Marshal(map[string]any{"url": url, "user": strings.TrimSpace(in.User), "pass": pass})
 			if _, err := stockReq("PUT", "/mcb/newpool", body); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			recordMark("P", "pool added")
@@ -2324,7 +2370,7 @@ func handlePools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := putPoolList(arr, shape); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		recordMark("P", "pools changed")
@@ -2696,8 +2742,12 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 			replaced := false
 			for i := range list {
 				if list[i].Name == name {
-					np.Tested = list[i].Tested
-					np.TargetC = list[i].TargetC
+					// (SC Box II, v0.5.5: a preset's test and its held temperature are for its clock and level:
+					// an edit that changes either is a new, untested setting)
+					if model.Plan != planBox2V || (list[i].MHz == np.MHz && list[i].MV == np.MV) {
+						np.Tested = list[i].Tested
+						np.TargetC = list[i].TargetC
+					}
 					if np.FanProfile == "custom" { // keeps its own (possibly edited) curve settings
 						np.FanAbortC, np.FanCooldown, np.FanPoll, np.FanSmooth, np.FanEdited =
 							list[i].FanAbortC, list[i].FanCooldown, list[i].FanPoll, list[i].FanSmooth, list[i].FanEdited
@@ -2710,7 +2760,7 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 				list = append(list, np)
 			}
 			if err := savePresets(list); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			writeJSON(w, map[string]any{"ok": true})
@@ -2722,13 +2772,21 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err := savePresets(out); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			writeJSON(w, map[string]any{"ok": true})
 		case "build":
-			// Tuner-built presets come from the auto-tuner, which is off on Box II (no clock/voltage control).
+			// Tuner-built presets come from the auto-tuner (on the SC Box II only once it is commissioned, or in the
+			// public release, publicFeatures).
 			if !featGate(w, model.Feat.Tuner, "tuner-built presets") {
+				return
+			}
+			if model.Plan == planBox2V {
+				// v0.5.5: on this model presets are built by the tuner itself (rebuild mode), which skips the
+				// curve's rejected settings, tests each preset at its own temperature with its own fan curve and
+				// refuses to run over another run; this shortcut would do none of that
+				writeJSON(w, map[string]any{"ok": false, "err": "on this model presets are built and tested by the tuner: open Tuner, pick “Rebuild presets” and start it"})
 				return
 			}
 			tunerMu.Lock()
@@ -2738,7 +2796,17 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, map[string]any{"ok": false, "err": "no tuner run yet: run the tuner with “Map every clock and voltage” first"})
 				return
 			}
-			built := buildPresetsFromCurve(t.getCurve())
+			// (SC Box II: the OEM's levels, not the engine's ranks, and only what the plan writer takes now)
+			built := buildPresetsFromCurve(hwList(t.getCurve()))
+			if model.Plan == planBox2V {
+				ok := built[:0]
+				for _, b := range built {
+					if b.PV = 0; box2CheckTuple(b.MHz, b.MV) == nil {
+						ok = append(ok, b)
+					}
+				}
+				built = ok
+			}
 			if len(built) == 0 {
 				writeJSON(w, map[string]any{"ok": false, "err": "no curve to build from: run the tuner with “Map every clock and voltage” first"})
 				return
@@ -2761,7 +2829,7 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err := savePresets(out); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			writeJSON(w, map[string]any{"ok": true, "built": len(built)})
@@ -2793,6 +2861,11 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, map[string]any{"ok": false, "err": err.Error()})
 				return
 			}
+			if model.Plan == planBox2V { // the owner's own choice: the plan onto the flash, once the OEM's files hold it
+				if p := box2SavedPreset(in.Name); p != nil { // (it waits for the files: not under controlMu)
+					go box2PersistOwnerPlan(p.MHz, p.MV)
+				}
+			}
 			activity.emit("⚙ preset applied: " + presetLabel(in.Name))
 			writeJSON(w, map[string]any{"ok": true, "note": "applied " + presetLabel(in.Name)})
 		case "idle":
@@ -2823,12 +2896,31 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 	// GET: presets + what's currently on the miner (to flag the active one) + live
 	// hashrate and running clock (so the UI can show a reliable ≈TH/s per preset by
 	// scaling the measured hashrate against the running clock — no fabricated wattage).
-	// On Box II the "presets" ARE the two stock modes (Hashrate / Low-power) read from the firmware's own
-	// plans: the panel only selects between them, it never stores a custom clock/voltage preset.
-	resp := map[string]any{"ok": true, "presets": presetsList(), "in_charge": chargeLabel()}
+	// On Box II the presets are its two stock modes (Hashrate / Low-power, read from the firmware's own plans) and,
+	// with clock control commissioned, the owner's clock presets (the tuner's High / Middle / Low / Lowest power
+	// among them, v0.5.5), each with its power figure: this unit's wall-meter reading there, else the estimate
+	// (power_box2.go), only with the power estimate on.
+	pl := presetsList()
+	resp := map[string]any{"ok": true, "presets": pl, "in_charge": chargeLabel()}
 	if model.Plan == planBox2V {
 		resp["box2"] = true
 		resp["stock_modes"] = true
+		est := map[string]any{}
+		pc := getBox2PowerConfig()
+		for _, p := range pl {
+			if !featOff(model.Feat.PowerEstimate) {
+				if w, src := box2UnitWatts(p.MHz, p.MV); w > 0 {
+					est[p.Name] = map[string]any{"w": math.Round(w*10) / 10, "src": src}
+				}
+			} else if k, i := pc.find(p.MHz, p.MV); i >= 0 && k.Watts > 0 { // (P7: the owner's own meter reading, estimate or not)
+				est[p.Name] = map[string]any{"w": math.Round(k.Watts*10) / 10, "src": "this unit's wall-meter reading"}
+			}
+		}
+		resp["est"] = est
+		// (P6) saved presets the clock window doesn't take now (it was locked again lower): shown, to be deleted
+		if out := box2OutsidePresets(); len(out) > 0 {
+			resp["outside"] = out
+		}
 	}
 	if raw, err := stockGet("/mcb/setting"); err == nil {
 		var cur map[string]any
@@ -2971,6 +3063,11 @@ func applyIdleThen(landed func()) error {
 	cur["manual"] = false
 	cur["select"] = float64(idx)
 	body, _ := json.Marshal(cur)
+	if model.Plan == planBox2V { // (v0.5.5: the boards stop: no trim re-send meanwhile)
+		box2Writing.Add(1)
+		defer box2Writing.Add(-1)
+		defer box2QuietFor(box2WriteQuiet)
+	}
 	if _, err = stockReq("PUT", "/mcb/setting", body); err != nil {
 		return fmt.Errorf("the miner refused idle: %v", err)
 	}
@@ -3334,7 +3431,14 @@ func stockLogin() error {
 
 // stockReq performs an authenticated request to the stock web backend, re-logging in
 // once on a 401 or when no token is cached yet. body may be nil (GET/DELETE).
-func stockReq(method, path string, body []byte) ([]byte, error) {
+func stockReq(method, path string, body []byte) (out []byte, err error) {
+	if method == "GET" {
+		end := traceRead("backend GET " + path)
+		defer func() { end(err) }()
+	} else {
+		end := traceWrite("backend " + method + " " + path + traceBodyNote(path, body))
+		defer func() { end(err) }()
+	}
 	if method == "PUT" && strings.HasPrefix(path, "/mcb/setting") {
 		// a power-plan write sets all four fans to one level (intminer): put fans 2+3 back on their offset
 		// right away, so the OEM's fan check never sees them at a level they aren't really turning at
@@ -3379,6 +3483,13 @@ func stockReq(method, path string, body []byte) ([]byte, error) {
 			noteMinerChange("clock/voltage change")
 		case "/mcb/pools", "/mcb/newpool", "/mcb/delpool":
 			noteMinerChange("pool change")
+		}
+		if method == "PUT" { // (cfgshadow.go: an owner's change that reached the OEM's backend is saved)
+			if strings.HasPrefix(path, "/mcb/setting") {
+				stockSettingPut(body) // (and for the owner's request it was made on)
+			} else {
+				stockOtherPuts.Add(1)
+			}
 		}
 	}
 	if r.StatusCode != 200 {
@@ -3628,7 +3739,7 @@ func restartMiner() {
 	widePath := "PATH=/usr/sbin:/usr/bin:/sbin:/bin:" + os.Getenv("PATH")
 	cmd := exec.Command("sh", "-c", "killall intminer.real intminer 2>/dev/null; exit 0")
 	cmd.Env = append(os.Environ(), widePath)
-	cmd.Run()
+	traceWrite("spawn: killall intminer (restart the mining program)")(cmd.Run())
 }
 
 func handleVerbose(w http.ResponseWriter, r *http.Request) {
@@ -3838,7 +3949,7 @@ func validateControlEx(p powerplan, over bool) error {
 	vMin, vMax := vrunMin, vrunMax
 	pMin, pMax := pvMin, pvMax
 	if over {
-		fMin, fMax = freqHardMin, effHard("freq", freqHardMax)
+		fMin, fMax = freqHardMin, ocFreqTop()
 		vMin, vMax = vrunHardMin, effHard("vrun", vrunHardMax)
 		pMin, pMax = pvHardMin, effHard("pv", pvHardMax)
 	}
@@ -3939,7 +4050,7 @@ func handleOverclock(w http.ResponseWriter, r *http.Request) {
 				s.Caps[k] = v
 			}
 			if err := saveOverclock(s); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			activity.emit("📐 overclock ceilings set to measured firmware caps")
@@ -3947,9 +4058,20 @@ func handleOverclock(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var s overclockState
+		if in.Acknowledge && !in.Revoke && model.Plan == planBox2V {
+			// the SC Box II: only up to this unit's own clean probe result (ceilingbox2.go); none → nothing to open
+			if why := box2UnlockErr(); why != "" {
+				writeJSON(w, map[string]any{"ok": false, "err": "not unlocked: " + why, "need_probe": true})
+				return
+			}
+		}
 		if in.Acknowledge && !in.Revoke {
 			s = overclockState{Acknowledged: true, At: time.Now().Format("2006-01-02 15:04"), Caps: loadOverclock().Caps}
-			activity.emit("🔓 overclock limits UNLOCKED — safety caps raised (user acknowledged)")
+			if model.Plan == planBox2V {
+				activity.emit(fmt.Sprintf("🔓 clock limit UNLOCKED up to %d MHz (this unit's probe result; user acknowledged)", ocFreqTop()))
+			} else {
+				activity.emit("🔓 overclock limits UNLOCKED — safety caps raised (user acknowledged)")
+			}
 		} else {
 			if getCharge() == "ceiling" {
 				ceilAbort.Store(true) // its steps are past the window now: it stops (no result), it doesn't read them as caps
@@ -3961,14 +4083,18 @@ func handleOverclock(w http.ResponseWriter, r *http.Request) {
 			activity.emit(msg)
 		}
 		if err := saveOverclock(s); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "overclock": s.Acknowledged, "at": s.At, "note": capPlusTrims()})
 		return
 	}
 	s := loadOverclock()
-	writeJSON(w, map[string]any{"ok": true, "overclock": s.Acknowledged, "at": s.At})
+	resp := map[string]any{"ok": true, "overclock": s.Acknowledged, "at": s.At}
+	if model.Plan == planBox2V {
+		resp["limit"], resp["unlock_err"], resp["probe"] = box2ProbeLimit(), box2UnlockErr(), box2ProbeView()
+	}
+	writeJSON(w, resp)
 }
 
 type presetInfo struct {
@@ -4003,12 +4129,13 @@ func setCharge(s string) {
 
 // heatHoldLeft: the charge became s: off the overheat Idle unless s is "idle".
 func heatHoldLeft(s string) {
+	traceCharge(s) // a tuner run or the probe: the freeze-hunt breadcrumbs on (trace.go)
 	if s != "idle" {
 		heatPending.Store("") // something else is in charge now: no waiting "start when cool"
 	}
 	if s != "idle" && heatHoldSaved.Load() {
 		heatHoldSaved.Store(false)
-		os.Remove(heatHoldPath()) // the overheat Idle was left (a preset, Stock, manual control): nothing to hold after a restart
+		cfgRemove(heatHoldPath()) // the overheat Idle was left (a preset, Stock, manual control): nothing to hold after a restart
 	}
 }
 func getCharge() string { chargeMu.Lock(); defer chargeMu.Unlock(); return chargeBy }
@@ -4033,6 +4160,7 @@ func safetyStopIdle() {
 	safetyGen.Add(1)
 	chargeBy = "idle"
 	chargeMu.Unlock()
+	traceCharge("idle")
 }
 
 // swapCharge: the charge goes from "from" to "to" only if it's still "from" (a run's end handing it back must not
@@ -4076,6 +4204,11 @@ func putSettingGen(gen int64, body []byte) error {
 	}
 	if genMoved(gen) {
 		return errSafetyStop
+	}
+	if model.Plan == planBox2V { // (v0.5.5: a whole setting put back can change the clock: the trims wait)
+		box2Writing.Add(1)
+		defer box2Writing.Add(-1)
+		defer box2QuietFor(box2WriteQuiet)
 	}
 	_, err := stockReq("PUT", "/mcb/setting", body)
 	return err
@@ -4179,7 +4312,7 @@ func handleControl(w http.ResponseWriter, r *http.Request) {
 				"pv": []int{pvMin, pvMax}, "fan": []int{fanMin, fanMax},
 			},
 			"hardlimits": map[string]any{
-				"freq": []int{freqHardMin, effHard("freq", freqHardMax)}, "vrun": []int{vrunHardMin, effHard("vrun", vrunHardMax)},
+				"freq": []int{freqHardMin, ocFreqTop()}, "vrun": []int{vrunHardMin, effHard("vrun", vrunHardMax)},
 				"pv": []int{pvHardMin, effHard("pv", pvHardMax)}, "fan": []int{fanMin, fanMax},
 			},
 			"overclock": ocUnlocked(),
@@ -4280,13 +4413,13 @@ func handleControl(w http.ResponseWriter, r *http.Request) {
 		// lanes C3/C4: a custom clock (+ V code with VoltageControl) on Box II goes through the Box II writer
 		// (window/V rule, refuse-not-clamp, read-back confirmation, revert on mismatch). The SC Lite window check
 		// below must never see it: Box II's mV window is 0–0, so a V-less request would pass it as "0 V".
-		// override (C7, owner build): a clock above the stock window needs override, as on the SC Lite, and
+		// override (C7): a clock above the stock window needs override, as on the SC Lite, and
 		// override needs the unlock commissioned (OverclockUnlock) and its risk accepted (ocUnlocked). Then the
 		// request goes through exactly the same writer and checks as any other (box2ApplyControl → box2CheckTuple
 		// with the window's top at clockWindowHi(), box2OverclockErr's stock-level rule, the "+" trims, the
-		// read-back confirm): override only lets a clock above 690 be asked for, it skips no check. The public
-		// build (OCHardMax 0) and a unit without the unlock refuse it as before.
-		if in.Override && (publicBuild || model.OCHardMax <= freqMax || !model.Feat.OverclockUnlock) {
+		// read-back confirm): override only lets a clock above 690 be asked for, it skips no check. The window's
+		// top is this unit's probe result (ocFreqTop), in both builds; a unit without the unlock refuses it.
+		if in.Override && (model.OCHardMax <= freqMax || !model.Feat.OverclockUnlock) {
 			writeJSON(w, map[string]any{"ok": false, "err": "overclock is not available on " + model.Name + " here: the clock window is " +
 				fmt.Sprintf("%d–%d MHz", freqMin, freqMax)})
 			return
@@ -4457,12 +4590,22 @@ func mutatePlanNoWake(mut func(*powerplan)) (string, error) { return mutatePlanE
 
 // clockWindowHi: the fastest clock (MHz) anything may run now: 700, or the unlocked ceiling once the owner has
 // accepted the clock-limit unlock. A chip trimmed faster than its board counts too.
+// ocFreqTop: the clock ceiling once unlocked: the hard ceiling tightened by a recorded firmware cap (effHard) and,
+// on the SC Box II, by this unit's saved clean probe result (box2ProbeLimit: 690 MHz with none, never above 750).
+func ocFreqTop() int {
+	hi := effHard("freq", freqHardMax)
+	if model.Plan == planBox2V {
+		hi = min(hi, max(box2ProbeLimit(), freqMax))
+	}
+	return hi
+}
+
 func clockWindowHi() int {
 	if hi, ok := ceilBox2Window(); ok { // Box II: the clock-ceiling probe's own window, only while it runs
 		return hi
 	}
 	if ocUnlocked() {
-		return effHard("freq", freqHardMax)
+		return ocFreqTop()
 	}
 	return freqMax
 }
@@ -5117,7 +5260,8 @@ type throttleRec struct {
 
 var throttleOnDisk throttleRec // (fanLoop only)
 
-// throttleKeep: the throttle's state on disk, written only when it changes.
+// throttleKeep: the throttle's state on disk, written only when it changes (fanLoop only). A write that fails is
+// tried again at the next reading; the throttle itself runs from memory (fanSt) meanwhile.
 func throttleKeep(saved, to int) {
 	r := throttleRec{saved, to}
 	if r == throttleOnDisk {
@@ -5175,7 +5319,7 @@ func restartRestore() {
 			heatHoldSaved.Store(true)
 			activity.emit("🔥 thermal guard: the miner stays on the Idle it was put on for heat (" + time.Unix(h.Since, 0).Format("Jan 2 15:04") + ") until you apply " + stockWord() + " or a preset")
 		} else {
-			os.Remove(heatHoldPath())
+			cfgRemove(heatHoldPath())
 		}
 	}
 	if b, err := os.ReadFile(throttlePath()); err == nil {
@@ -5499,8 +5643,13 @@ func fanTick(c fanConfig) {
 			target, note = -1, "the miner is idle: its own fan control is in charge (writing fans would wake it)"
 		} else if err == nil {
 			wrote = true
+			fanWriteFailing.Store(false)
 		} else {
+			fanWriteFailing.Store(true)
 			note = fmt.Sprintf("fan write failed (%v): the fans stay where they were, not at %d %%", err, target)
+			if model.Plan == planBox2V && cfgStoreReadOnly() {
+				note += fmt.Sprintf(" (the settings storage is read-only, and %s backend saves each fan change there before it applies it: reboot the miner)", oemPoss())
+			}
 			target = -1 // "Now" shows what the fans run at, not what was asked (written again at the next reading)
 		}
 	}
@@ -5513,7 +5662,7 @@ func fanTick(c fanConfig) {
 	fanMu.Lock()
 	fanSt.MaxT, fanSt.HotBoard, fanSt.Target, fanSt.Guard, fanSt.Note = maxT, hot, target, guard, note
 	fanSt.SavedFreq, fanSt.ThrottledTo = savedFreq, throttledTo
-	throttleKeep(savedFreq, throttledTo)
+	defer throttleKeep(savedFreq, throttledTo) // (after the unlock: a slow or failing flash never holds the fan state)
 	if wrote {
 		fanSt.LastWrite, fanSt.LastPct = time.Now(), target
 	}
@@ -5718,20 +5867,36 @@ func sanitizeFanConfig(c fanConfig) (fanConfig, []string) {
 	return c, fixed
 }
 
+// setFanConfig: save and use the settings (validated by the caller). They are used even when they can't be saved
+// (a read-only settings storage after a power cut): the fans follow what the owner just chose, until a restart.
+// The error then says so (errFanNotSaved).
 func setFanConfig(c fanConfig) error {
-	if err := saveFanConfig(c); err != nil {
-		return err
-	}
+	err := saveFanConfig(c)
 	fanGuardClear()
-	return useFanConfig(c)
+	useFanConfig(c)
+	return fanNotSaved(err)
 }
 
 // storeFanConfig: save and use the settings, keeping the watchdog's fan floor (a library change only).
 func storeFanConfig(c fanConfig) error {
-	if err := saveFanConfig(c); err != nil {
-		return err
+	err := saveFanConfig(c)
+	useFanConfig(c)
+	return fanNotSaved(err)
+}
+
+// errFanNotSaved: the fan settings are in use, but couldn't be saved.
+type errFanNotSaved struct{ err error }
+
+func (e errFanNotSaved) Error() string {
+	return "in use until the panel restarts, but " + cfgSaveErr(e.err)
+}
+func (e errFanNotSaved) Unwrap() error { return e.err }
+
+func fanNotSaved(err error) error {
+	if err == nil {
+		return nil
 	}
-	return useFanConfig(c)
+	return errFanNotSaved{err}
 }
 
 func useFanConfig(c fanConfig) error {
@@ -5800,7 +5965,7 @@ func handleFan(w http.ResponseWriter, r *http.Request) {
 				p.FanPoints = append([]curvePoint(nil), fc.Points...)
 				p.FanAbortC, p.FanCooldown, p.FanPoll, p.FanSmooth, p.FanEdited = fc.AbortC, fc.CooldownS, fc.PollS, &sm, true
 				if err := savePresets(list); err != nil {
-					writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+					writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 					return
 				}
 				// the preset is on the miner right now: its fans follow the edit straight away
@@ -5810,7 +5975,7 @@ func handleFan(w http.ResponseWriter, r *http.Request) {
 					nc.AbortC, nc.CooldownS, nc.PollS, nc.Smoothing = fc.AbortC, fc.CooldownS, fc.PollS, fc.Smoothing
 					fitResume(&nc)
 					if err := setFanConfig(nc); err != nil {
-						writeJSON(w, map[string]any{"ok": false, "err": "saved to the preset, but the running fan settings failed: " + err.Error()})
+						writeJSON(w, map[string]any{"ok": false, "err": "saved to the preset; the running fan settings are " + err.Error()})
 						return
 					}
 				}
@@ -5853,7 +6018,7 @@ func handleFan(w http.ResponseWriter, r *http.Request) {
 				store = setFanConfig
 			}
 			if err := store(nc); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": "the curve is " + err.Error()})
 				return
 			}
 			writeJSON(w, map[string]any{"ok": true, "key": key, "profile": fanProfilesView(nc)[key]})
@@ -5886,7 +6051,7 @@ func handleFan(w http.ResponseWriter, r *http.Request) {
 				store = setFanConfig
 			}
 			if err := store(nc); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": "deleted: " + err.Error()})
 				return
 			}
 			writeJSON(w, map[string]any{"ok": true})
@@ -5921,7 +6086,8 @@ func handleFan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := setFanConfig(in); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+			activity.emit("⚙ auto fan " + map[bool]string{true: "on", false: "off"}[in.Enabled] + " (not saved: " + err.Error() + ")")
+			writeJSON(w, map[string]any{"ok": false, "err": "the fan settings are " + err.Error()})
 			return
 		}
 		activity.emit("⚙ auto fan " + map[bool]string{true: "on", false: "off"}[in.Enabled])
@@ -6335,7 +6501,7 @@ func handleTuner(w http.ResponseWriter, r *http.Request) {
 	tunerMu.Unlock()
 	resp := map[string]any{"ok": true, "defaults": defaultTunerConfig(), "in_charge": chargeLabel(), "files_dir": tunerRunDir(),
 		"overclock": loadOverclock().Acknowledged,
-		"ocmax":     map[string]any{"freq": effHard("freq", freqHardMax), "vrun": effHard("vrun", vrunHardMax)}}
+		"ocmax":     map[string]any{"freq": ocFreqTop(), "vrun": effHard("vrun", vrunHardMax)}}
 	if _, err := os.Stat(filepath.Join(tunerRunDir(), "log.txt")); err == nil {
 		resp["has_files"] = true
 	}
@@ -7235,10 +7401,30 @@ var pageBuild, indexPage = func() (string, string) {
 		"<title>SC Lite</title>", "<title>"+brandProduct+"</title>", // the tab title before the model loads (sign-in)
 		`class="brand">SC&nbsp;LITE`, `class="brand">`+brandHeader, // the header name before the model loads
 		"return (m&&m.name)||'SC Lite';}", "return (m&&m.name)||'"+brandProduct+"';}").Replace(indexHTML)
+	page = pageForVariant(page, publicBuild)
 	h := sha256.Sum256([]byte(page))
 	b := hex.EncodeToString(h[:6])
 	return b, strings.Replace(page, "__PAGE_BUILD__", b, 1)
 }()
+
+// pageForVariant: the owner-only parts of the page (the Commissioning section and its code, the commissioning
+// banner, the commissioning-build note) are marked in indexHTML with /*owner{*/ … /*}owner*/
+// (code) and <!--owner{--> … <!--}owner--> (markup): the public build serves the page without them, not just hidden,
+// and with the /*public: … :public*/ stand-ins (a no-op banner) in their place. Elsewhere the markers are only comments.
+var (
+	reOwnerJS   = regexp.MustCompile(`(?s)/\*owner\{\*/.*?/\*\}owner\*/`)
+	reOwnerHTML = regexp.MustCompile(`(?s)<!--owner\{-->.*?<!--\}owner-->`)
+	rePublicJS  = regexp.MustCompile(`(?s)/\*public: (.*?) :public\*/`)
+)
+
+func pageForVariant(page string, public bool) string {
+	if !public {
+		return page
+	}
+	page = reOwnerJS.ReplaceAllString(page, "")
+	page = reOwnerHTML.ReplaceAllString(page, "")
+	return rePublicJS.ReplaceAllString(page, "$1")
+}
 
 func main() {
 	backupFlag := flag.String("backup", "/backup", "where the OEM's own programs keep their logs")
@@ -7256,6 +7442,7 @@ func main() {
 	// Decide the config write mode (FAT vs ext), note a read-only squashfs root, and clear any *.tmp a power
 	// cut left in the config dir. Must run after the model is known and after flag.Parse (it reads *authFile).
 	initConfigStore()
+	cfgStoreBoot() // the settings partition's start-up check (scbox2-fatfix, run by the boot script): what it repaired
 	// On the Box II the OEM daemons' log dir (/backup) would be on flash; keep those scratch logs in RAM
 	// instead (R04/R19). The SC Lite's /backup is on ext and unchanged. A boot script that passes -backup wins.
 	if model.Plan == planBox2V && *backupFlag == "/backup" {
@@ -7471,7 +7658,7 @@ func securityHeaders(h http.Handler) http.Handler {
 const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SC Lite</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><style>
  :root{color-scheme:dark;--pair:#5aa9ff;--pairbg:rgba(90,169,255,.07);--bg:#000;--panel:#0e0e0e;--panel2:#1a1a1a;--border:#2c2c2c;--line:#2c2c2c;--text:#f4f4f4;--muted:#a0a0a0;--accent:#fff;--accent2:#d6d6d6;--ok:#3dd68c;--warn:#f0b429;--bad:#ff6b6b;--btn:#161616;--btn-h:#222;--logbg:#060606;--logtx:#cfcfcf;--hdr:rgba(0,0,0,.9);--hover:#222;--sel-bg:#1f1f1f;--tip-bg:#141414;--cell-empty:#161616;--cell-edge:#444;--over:#d03b3b;--ramp-0:#5a5a5a;--ramp-1:#7a7a7a;--ramp-2:#9a9a9a;--ramp-3:#b8b8b8;--ramp-4:#d6d6d6;--ramp-5:#f4f4f4}
- :root[data-theme="light"]{color-scheme:light;--pair:#1d6fd1;--pairbg:rgba(29,111,209,.06);--bg:#ffffff;--panel:#f6f6f6;--panel2:#ececec;--border:#8f8f8f;--line:#c4c4c4;--text:#0a0a0a;--muted:#555555;--accent:#0a0a0a;--accent2:#2c2c2c;--ok:#0a7a3d;--warn:#8a5c00;--bad:#c62828;--btn:#f1f1f1;--btn-h:#e4e4e4;--logbg:#ffffff;--logtx:#1a1a1a;--hdr:rgba(255,255,255,.9);--hover:#e2e2e2;--sel-bg:#e4e4e4;--tip-bg:#ffffff;--cell-empty:#ffffff;--cell-edge:#969696;--over:#c62828;--ramp-0:#9e9e9e;--ramp-1:#808080;--ramp-2:#626262;--ramp-3:#474747;--ramp-4:#2c2c2c;--ramp-5:#0a0a0a}
+ :root[data-theme="light"]{color-scheme:light;--pair:#1660b5;--pairbg:rgba(29,111,209,.06);--bg:#e9e7e2;--panel:#e1dfd9;--panel2:#d7d4cd;--border:#9a968d;--line:#c6c2ba;--text:#26241f;--muted:#5c5850;--accent:#2b2924;--accent2:#3e3b35;--ok:#086a34;--warn:#765000;--bad:#ad2020;--btn:#dedbd4;--btn-h:#d3d0c8;--logbg:#eeece7;--logtx:#2b2924;--hdr:rgba(233,231,226,.92);--hover:#d5d2cb;--sel-bg:#d7d4cd;--tip-bg:#f1efea;--cell-empty:#eeece7;--cell-edge:#9a968d;--over:#ad2020;--ramp-0:#cfcac1;--ramp-1:#b7b1a7;--ramp-2:#9f998e;--ramp-3:#6b665d;--ramp-4:#4a4640;--ramp-5:#26241f}
  :root[data-theme="light"] button.primary,:root[data-theme="light"] button.active:not(.tab-btn){color:#fff}
  :root[data-theme="light"] .pill.ok{border-color:#9fd4b4;background:#e8f6ee}
  :root[data-theme="light"] .pill.bad{border-color:#e3a1a1;background:#fdeaea}
@@ -7530,7 +7717,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
  .cell{width:26px;height:26px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;cursor:default;user-select:none;background:var(--cell-empty);box-shadow:inset 0 0 0 1px var(--cell-edge);color:var(--muted)}
  .cell.strong{color:var(--bg)}
  .cell.ring{box-shadow:0 0 0 2px var(--text)}
- .cell.over{background:var(--over)!important;color:#fff;font-weight:700;box-shadow:none}
+ .cell.over{background:var(--over)!important;color:#fff;font-weight:700;box-shadow:none}:root[data-theme="light"] .cell:not(.strong):not(.over){color:var(--text)}
  .cmgrid2{display:grid;grid-template-columns:repeat(auto-fill,26px);gap:3px;justify-content:start}
  .chip{aspect-ratio:1;border:1px solid #444;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;cursor:default;user-select:none}
  .chip.slow,.leg i.slow{box-shadow:inset 0 0 0 2px #5bc8ff}
@@ -7741,7 +7928,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
  /* schedule (schedule.html parity) */
  .toast{position:fixed;right:18px;bottom:18px;z-index:200;max-width:420px;background:#141414;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 14px;font-size:12.5px;line-height:1.45;opacity:0;transform:translateY(8px);transition:opacity .2s,transform .2s;pointer-events:none;box-shadow:0 10px 40px rgba(0,0,0,.4)}
  .toast.show{opacity:1;transform:none}.toast.err{border-color:#6e2626;color:#ffb3b3}
- :root[data-theme="light"] .toast{background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.15)}:root[data-theme="light"] .toast.err{border-color:#e3a1a1;color:#b42318}
+ :root[data-theme="light"] .toast{background:#f1efea;box-shadow:0 10px 40px rgba(0,0,0,.15)}:root[data-theme="light"] .toast.err{border-color:#e3a1a1;color:#b42318}
  @media(max-width:640px){.toast{left:12px;right:12px;max-width:none}}
  .note{border-radius:10px;padding:8px 11px;font-size:12.5px;margin:8px 0;border:1px solid var(--border)}
  .note.bad{color:var(--bad);border-color:#5a2323;background:#220c0c}.note.warn{color:var(--warn);border-color:#5a4a1f;background:#221b09}
@@ -7811,7 +7998,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
  @media(max-width:760px){.mode-cards{grid-template-columns:1fr}}
  .mode-card{display:flex;gap:10px;align-items:flex-start;padding:12px 13px;border-radius:12px;cursor:pointer;background:var(--panel2);border:1px solid var(--border)}
  .mode-card.on{border-color:var(--text);box-shadow:0 0 0 1px var(--text) inset;background:var(--sel-bg)}
- :root[data-theme="light"] .mode-card.on{background:#fff}
+ :root[data-theme="light"] .mode-card.on{background:#f1efea}
  .mode-card input{width:auto;margin:3px 0 0;flex:0 0 auto}
  .mode-card b{display:block;margin-bottom:4px;font-size:13px}
  .mode-card small{color:var(--muted);font-size:11.5px;line-height:1.45}
@@ -7851,6 +8038,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
  .tcell.strong{color:var(--bg)}.tcell.over{background:var(--over);color:#fff;font-size:12px;box-shadow:none}
  .tcell:hover{outline:2px solid var(--text);outline-offset:1px}
  .tcell.ring{box-shadow:0 0 0 2px var(--text)}
+ .tcell.trim{box-shadow:inset 0 0 0 2px var(--pair);color:var(--pair);font-size:11px}.tcell.trim.strong{color:var(--bg)}
 
  .tkv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
  .tkv .kv .v{font-size:16px}
@@ -7966,7 +8154,7 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
  .pcard{border:1px solid var(--border);border-radius:12px;padding:12px 13px;background:var(--panel2);display:flex;flex-direction:column;gap:5px;min-height:11rem}
  .pcard.active{border-color:var(--text);box-shadow:0 0 0 1px var(--text) inset;background:var(--sel-bg)}
  .pcard.empty{border-style:dashed;opacity:.8}
- :root[data-theme="light"] .pcard.active{background:#fff}
+ :root[data-theme="light"] .pcard.active{background:#f1efea}
  .pcard h3{margin:0;font-size:14px;display:flex;gap:8px;align-items:center;justify-content:space-between}
  .pcard .clock{font-size:20px;font-weight:600;line-height:1.2}
  .pcard .sub{font-size:12px;color:var(--muted)}
@@ -8220,9 +8408,9 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
      <button onclick="logSave('private')" style="border-color:var(--warn)" title="Both logs with the pools’ addresses and accounts (wallet, worker), the miner’s name, IP and MAC addresses and notification secrets taken out: safe to post">For sending, private details out (.zip)</button></div></div>
  </div>
  <div class="tabpane hide" data-pane="settings">
-   <div class="panel hide" id="companel"><div class="hdr"><b>Commissioning</b><span class="muted" id="comnote"></span></div>
+   <!--owner{-->   <div class="panel hide" id="companel"><div class="hdr"><b>Commissioning</b><span class="muted" id="comnote"></span></div>
      <div class="muted cm-intro">This miner’s control features ship <b>switched off</b>. Each one has a hardware test in the commissioning guide (C1–C9). Switch a feature on only after its test has passed on this miner. Switching off is always safe and needs no password. Flashing the SD card resets every switch to off.</div>
-     <div id="combody"><div class="busy"><span class="muted">Loading…</span><div class="rbar indet"><div class="rfill"></div></div></div></div></div>
+     <div id="combody"><div class="busy"><span class="muted">Loading…</span><div class="rbar indet"><div class="rfill"></div></div></div></div></div><!--}owner-->
    <div class="panel"><div class="hdr"><b>Restart &amp; reboot</b></div>
      <div class="muted" style="font-size:12.5px;margin-bottom:10px;line-height:1.5"><b>Restart mining</b> asks the OEM backend to restart the miner: on this firmware that reboots it (the panel too, 1–2 min). <b>Reboot</b> reboots the whole miner directly (1–2 min).</div>
      <div class="row"><button onclick="softRestart()">↻ Restart mining</button><button onclick="fullReboot()" style="color:var(--bad)">⟳ Reboot miner</button><span class="muted" id="powmsg" style="align-self:center"></span></div>
@@ -8252,6 +8440,8 @@ const indexHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><m
        <span class="mono" id="donaddr" style="font-size:12.5px;word-break:break-all">bc1qrrw3jj6f2n3xs3gm93z93mtrz0qde0ztnc0mr3</span>
        <button onclick="copyDonation()" style="padding:4px 10px;font-size:12px">Copy</button></div>
      <div class="muted" style="font-size:11px;margin-top:6px">Just an address to copy: the miner never mines to it or sends it anything.</div></div>
+   <div class="panel hide" id="tspanel"><div class="hdr"><b>Troubleshooting</b><span class="muted" style="font-size:12px">for diagnosing freezes and unexpected restarts</span></div>
+     <div id="tsbody"></div></div>
  </div>
 </main>
 <div class="toast" id="toast"></div><div class="sc-tip" id="sc_tip"></div>
@@ -8288,9 +8478,14 @@ function toggleTheme(){const nt=isDark()?'light':'dark';document.documentElement
 updateThemeBtn();
 const f1=x=>x==null?'–':(Math.round(x*100)/100);
 const pct2=x=>(x>0&&x<0.005)?'<0.01':f1(x); // a share in %: errors there but under 0.005 % aren't shown as 0
+// jpost: POST JSON → {s: HTTP status (0: no answer), j}. j.noreply: the request went out but no (complete) answer came
+// back: the miner may have acted on it (an install whose panel hands off to the installer drops the connection).
 async function jpost(u,b){let r;try{r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'panel'},body:JSON.stringify(b||{})});}
- catch(e){return{s:0,j:{ok:false,err:'Couldn’t reach the miner (it may be restarting, or the network dropped). Try again in a minute.'}};}
- return{s:r.status,j:await r.json().catch(()=>({ok:false,err:'The miner sent an unexpected answer (HTTP '+r.status+'). Try again in a minute.'}))};}
+ catch(e){return{s:0,j:{ok:false,noreply:true,err:'Couldn’t reach the miner (it may be restarting, or the network dropped). Try again in a minute.'}};}
+ const j=await r.json().catch(()=>({ok:false,noreply:r.status===200,err:'The miner sent an unexpected answer (HTTP '+r.status+'). Try again in a minute.'}));
+ // the sign-in and same-page refusals answer {"error":…}, the handlers {"ok":false,"err":…}: the page reads j.err
+ if(j&&typeof j==='object'&&!j.err&&j.error){j.err=String(j.error);if(j.ok===undefined)j.ok=false;}
+ return{s:r.status,j};}
 // busyHTML: a calm "working on it" state with a moving bar, for data the miner can't give yet
 function busyHTML(msg,detail){return '<div class="busy"><span class="muted"'+(detail?' title="'+hesc(detail)+'"':'')+'>'+hesc(msg||'Loading…')+'</span><div class="rbar indet"><div class="rfill"></div></div></div>';}
 const OFFLINE='Can’t reach the miner just now (it may be restarting, or the network dropped). Reconnecting…';
@@ -8368,11 +8563,17 @@ function applyModel(){const m=MODEL();if(!isOtherModel())return; // SC Lite / no
  // span carries the Box II wording for the same place (the SC Lite page shows its own text unchanged)
  document.querySelectorAll('.lite-only').forEach(e=>e.classList.add('hide'));
  if(B2T())document.querySelectorAll('[data-box2]').forEach(e=>{e.textContent=e.getAttribute('data-box2');});
- if(PUB()&&featOff2(F().Tuner))pubNoTuner();
+ if(pubNoTunerP())pubNoTuner();
+ // box2v builds its presets in the tuner (Tuner → Rebuild presets: tested, each with its own fan curve):
+ // the Presets tab's untested "Build from tuner" is refused there, so its button isn't shown
+ if(B2T()){const b=$('btnPresetBuild');if(b&&b.classList)b.classList.add('hide');}
  if(PUB()){const cp=$('companel');if(cp)cp.innerHTML='';} // the public release: no commissioning text in the page at all
  b2Folds();
  renderModelBanner(m);}
-// pubNoTuner: the public release has no tuner on this model: the page's fixed texts stop pointing at it (the
+// pubNoTunerP: the public page has no tuner-built presets or tuner chip trims to point at: no tuner on this model in
+// the public release (publicFeatures). (v0.5.5: the box2v tuner builds presets and trims chips too.)
+function pubNoTunerP(){return PUB()&&featOff2(F().Tuner);}
+// pubNoTuner: (pubNoTunerP) the page's fixed texts stop pointing at tuner-built presets and the tuner's trims (the
 // tuner-built High / Middle / Low / Lowest power, "Build from tuner", "tested" / "not tested" tags)
 function pubNoTuner(){const hide=id=>{const e=$(id);if(e&&e.classList)e.classList.add('hide');};hide('btnPresetBuild');
  const pi=$('p_intro');if(pi)pi.innerHTML='A preset is '+(B2T()?'a clock and voltage':'a clock, voltage and PV')+' plus the fan curve to run them with. <b>Apply</b> puts the clock on the miner and switches its auto fan to that curve.';
@@ -8380,6 +8581,8 @@ function pubNoTuner(){const hide=id=>{const e=$(id);if(e&&e.classList)e.classLis
  const sh=$('sc_hint');if(sh)sh.innerHTML=String(sh.innerHTML||'').replace(/\(the High[^)]*\)/,B2T()?'(Stock High, Stock Low, your own from Presets, or Idle)':'(your own from Presets, the firmware’s Stock plan, or Idle)');}
 // renderModelBanner: the "monitoring mode" note shown on the Dashboard for any non-SC-Lite model — what
 // works, what is off, and the thermal backstop (the profile's own cut-off; the stop/thermal note per B3).
+/*public: function renderModelBanner(m){const el=$('modelbanner');if(el){el.classList.add('hide');el.innerHTML='';}} :public*/
+/*owner{*/
 function renderModelBanner(m){const el=$('modelbanner');if(!el)return;
  if(!isOtherModel()||PUB()){el.classList.add('hide');el.innerHTML='';return;}
  const cut=MCUTOFF(),f=F();
@@ -8396,7 +8599,7 @@ function renderModelBanner(m){const el=$('modelbanner');if(!el)return;
    (on.length?'<b>Switched on</b> for this unit: '+hesc(on.join(', '))+'. ':'')
    +(off.length?'<b>Still off</b> until tested on this unit (Settings → Commissioning): '+hesc(off.join(', '))+'. ':'')
    +idle,off.length?'you':'')+'</div></div>';
- el.classList.remove('hide');}
+ el.classList.remove('hide');}/*}owner*/
 
 async function boot(){let m;try{const r=await fetch('/api/me');m=await r.json();pwAlgo(m.pw_algo,m.pw_upgrade_waits);}catch(e){if($('app')&&$('app').classList.contains('hide')){showAuth('login');$('authtitle').textContent=OFFLINE;}retryLater(boot,5000);return;}
  window._me=m;window._ackdate=m.acknowledged||'';window._needMP=!m.miner_pass_set;
@@ -8415,6 +8618,7 @@ async function syncTime(){try{const r=await fetch('/api/time');if(!r.ok)return;c
 // Settings → Recovery (recovery.go): hardware watchdog and the kept system log, both off by default
 async function loadRecovery(){try{const r=await fetch('/api/recovery');renderRecovery(await r.json());}catch(e){$('recbody').innerHTML=busyHTML(OFFLINE);retryLater(loadRecovery);}}
 function renderRecovery(v){if(!v||!v.ok){$('recbody').innerHTML='<span class="muted">'+hesc((v&&v.err)||'unavailable')+'</span>';return;}
+ renderTroubleshooting(v);
  $('recnote').textContent=(v.watchdog_running?'watchdog on':'watchdog off')+' · '+(v.keep_log?'log kept':'log not kept');
  if(isOtherModel()){renderRecoveryBox2(v);return;}
  let h='<div class="muted" style="font-size:12.5px;line-height:1.5;margin-bottom:8px">If the control board itself freezes (every program stops, the miner drops off the network), nothing in the OEM’s firmware brings it back: it stays dead until the power is cut. The hardware watchdog that could fix that can’t be used on this board; keeping the system log at least shows afterwards what happened.</div>';
@@ -8430,10 +8634,45 @@ function renderRecoveryBox2(v){
   +imgMore('Why there’s no watchdog','The hardware watchdog that could fix that can’t be used on this board; keeping the system log at least shows afterwards what happened.<br>This board’s kernel driver for the watchdog chip locks up a processor core the moment it’s switched on (found by taking the kernel apart; it’s what stopped the panel and SSH on v1.5.12). So it stays off, and the panel never touches it.')+'</div>';
  h+='<label style="display:flex;gap:7px;align-items:center;font-size:13px;opacity:.55"><input type="checkbox" id="recwdt" style="width:auto;margin:0" disabled> <span><b>Reboot by itself if the control board freezes</b> (hardware watchdog): not available</span></label>';
  h+='<label style="display:flex;gap:7px;align-items:center;font-size:13px;margin-top:8px"><input type="checkbox" id="reclog" style="width:auto;margin:0"'+(v.keep_log?' checked':'')+' onchange="recSet({keep_log:this.checked})"> <span><b>Keep the system log across restarts</b></span></label>'
-  +'<div class="muted" style="font-size:12px;margin:2px 0 6px 24px;line-height:1.5">'+(v.kept_before?('Saved copy from '+hesc(fmtWhen(v.kept_before))+'.'):'')
-  +imgMore('What it keeps','The system log (the kernel’s messages) lives in memory and is lost at every restart, so a freeze takes its last messages with it. With this on, its last 48 KB are saved every 2 minutes (only when they changed) and the private log export (Log → “For sending”) includes them as “system log before the last restart”.')+'</div>';
+  +'<div class="muted" style="font-size:12px;margin:2px 0 6px 24px;line-height:1.5">'+(v.kept_before?('Saved copy from '+hesc(fmtWhen(v.kept_before))+'. '):'')
+  +(v.keep_log_flash?('Each save writes to the settings flash (every '+(v.keep_log_every_min||30)+' min at most, only when the log changed)'+(v.syslog_remote_avail?': sending the log to another computer (Troubleshooting, at the bottom of Settings) is the better tool, it writes nothing here and keeps every line.':'.')):'')
+  +imgMore('What it keeps','The system log (the kernel’s messages) lives in memory and is lost at every restart, so a freeze takes its last messages with it. With this on, its last 32 KB are saved every '+(v.keep_log_every_min||30)+' minutes (only when they changed) and the private log export (Log → “For sending”) includes them as “system log before the last restart”. A freeze still loses what was logged since the last save.')+'</div>';
  if(v.unexpected)h+='<div style="font-size:12.5px;margin-top:6px">'+unexpText(v.unexpected)+'</div>';
  $('recbody').innerHTML=h;}
+// Settings → Troubleshooting (recovery.go): the system log sent to another computer as it is logged. Shown only when
+// the panel's answer offers it (syslog_remote_avail): elsewhere it stays hidden and empty (the SC Lite page as before).
+function renderTroubleshooting(v){const p=$('tspanel');if(!p)return;
+ if(!v||!v.syslog_remote_avail){p.classList.add('hide');$('tsbody').innerHTML='';return;}
+ const hw=$('tshelp'),open=!!(hw&&hw.open); // a redraw (after Save) keeps the instructions open
+ let h='<div class="muted" style="font-size:12.5px;line-height:1.5;margin-bottom:8px">If the miner freezes or restarts by itself, this sends every system-log line to your computer as it happens, so the last lines before a freeze are kept. Leave it off otherwise.</div>';
+ h+='<div style="font-size:13px"><b>Send the system log to this computer</b> <span class="muted">(address:port, UDP syslog; empty = off)</span></div>'
+  +'<div style="display:flex;gap:6px;align-items:center;margin:4px 0 2px 0"><input id="recsyslog" placeholder="192.168.1.20:514" value="'+hesc(v.syslog_remote||'')+'" style="max-width:220px"> <button class="primary" style="width:auto" onclick="recSet({syslog_remote:$(\'recsyslog\').value.trim()})">Save</button></div>'
+  +'<div class="muted" style="font-size:12px;margin:2px 0 6px 0;line-height:1.5">'+(v.syslog_remote_err?('<span style="color:var(--bad)">⚠ Saved'+(v.syslog_remote?(' ('+hesc(v.syslog_remote)+')'):' (off)')+', but the system log couldn’t be restarted for it: '+hesc(v.syslog_remote_err)+'. It may not be sent as set until the next boot; try Save again.</span>'):v.syslog_remote?('On: every line is also sent to '+hesc(v.syslog_remote)+'.'):'Off.')+'</div>'
+  +'<div class="muted" style="font-size:12px;margin:2px 0 6px 0;line-height:1.5">⚠ The log is sent <b>unencrypted</b> over the local network: point it only at your own computer on the same network. An IPv4 address only (no host names), port 514 by default.</div>'
+  +imgMore('How to receive it on your computer',tsHelpHTML(),'','tshelp')
+  +imgMore('What it sends','Every line of the system log (the kernel’s and the programs’ messages, and while a tuner run or the clock-ceiling probe runs, a breadcrumb for each call the panel makes to the mining program, its backend and the settings partition) is also sent over UDP to that computer as it is logged, so a freeze can’t take the last lines with it. Kept across restarts. Run a syslog receiver there (port 514 by default); nothing is sent anywhere else.');
+ $('tsbody').innerHTML=h;
+ p.classList.remove('hide');
+ if(open&&$('tshelp'))$('tshelp').open=true;}
+// tsRecvCmd: a one-line UDP syslog receiver (Python 3, nothing to install): every line printed and kept in
+// scbox2-syslog.txt. win: the Windows PowerShell form (no sudo; "python").
+function tsRecvCmd(win){return (win?'python':'sudo python3')+' -u -c "import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind((\'0.0.0.0\',514));[print(s.recv(4096).decode(errors=\'replace\').strip(),flush=True) for _ in iter(int,1)]" | tee scbox2-syslog.txt';}
+// tsCode: a command in a monospace block with a Copy button (the text is HTML-escaped; Copy takes it as shown).
+function tsCode(id,cmd){return '<div style="display:flex;gap:6px;align-items:flex-start;margin:4px 0 8px 0"><pre class="mono" id="'+id+'" style="flex:1;min-width:0;margin:0;padding:6px 8px;font-size:11.5px;line-height:1.45;white-space:pre-wrap;word-break:break-all;background:var(--logbg);color:var(--logtx);border:1px solid var(--line);border-radius:6px;user-select:all">'+hesc(cmd)+'</pre><button onclick="tsCopy(\''+id+'\')" style="width:auto;padding:4px 10px;font-size:12px">Copy</button></div>';}
+function tsCopy(id){const el=$(id);if(!el)return;const t=el.textContent;
+ const ok=()=>toast('Copied.'),fb=()=>{const r=document.createRange();r.selectNodeContents(el);const sel=getSelection();sel.removeAllRanges();sel.addRange(r);
+  try{document.execCommand('copy');ok();}catch(e){toast('Select the command and copy it',true);}};
+ try{navigator.clipboard?navigator.clipboard.writeText(t).then(ok,fb):fb();}catch(e){fb();}}
+function tsHelpHTML(){const c='<span class="mono">',e='</span>';
+ return '<b>1. Start a receiver on your computer</b> (it needs Python 3; leave its window open).<br>'
+  +'Linux or Mac, in a terminal:'+tsCode('tscmdunix',tsRecvCmd(false))
+  +'Windows, in PowerShell (allow Python through the firewall when Windows asks):'+tsCode('tscmdwin',tsRecvCmd(true))
+  +'On Linux with a firewall on, let the log in first: '+c+'sudo ufw allow 514/udp'+e+'.<br>'
+  +'<b>2. Find your computer’s IPv4 address:</b> '+c+'ip -4 addr'+e+' (Linux), '+c+'ipconfig'+e+' (Windows) or System Settings → Network (Mac). It looks like 192.168.1.20.<br>'
+  +'<b>3. Enter it above as address:514</b> (e.g. '+c+'192.168.1.20:514'+e+') and press <b>Save</b>.<br>'
+  +'<b>4. Check that lines appear</b> in the receiver’s window: logging in prints some (or, signed in over SSH, run '+c+'logger hello'+e+' on the miner).<br>'
+  +'<b>5. Reproduce the problem</b> and leave the receiver running; everything is also kept in '+c+'scbox2-syslog.txt'+e+'.<br>'
+  +'<b>For a bug report</b>, send the last ~100 lines before the freeze from '+c+'scbox2-syslog.txt'+e+', and the private log export (Log → “For sending, private details out”). Turn this off (empty, Save) when you’re done.';}
 async function recSet(o){if(o&&o.watchdog===true&&!confirm('Turn on the hardware watchdog? It is experimental: the board resets itself if the panel stops answering for a while.')){loadRecovery();return;}const {j}=await jpost('/api/recovery',o);if(j&&!j.ok)toast(j.err||'failed',true);loadRecovery();}
 // Settings → Commissioning (commission.go): the per-unit switches for the control features a model ships with
 // off until its hardware test has passed on this miner. Shown only when /api/commission says there is
@@ -8443,6 +8682,7 @@ async function loadCommission(){const p=$('companel');if(!p)return;if(PUB())p.in
  if(window._comBusy)return; // a switch is being applied: the restart wait redraws the card
  try{const r=await fetch('/api/commission',fetchTO(15000));if(r.status===401){boot();return;}renderCommission(await r.json());}
  catch(e){if(!p.classList.contains('hide'))$('combody').innerHTML=busyHTML(OFFLINE);retryLater(loadCommission);}}
+/*owner{*/
 function comTestId(f){return (String(f.test||'').match(/^C\d+/)||[''])[0];}
 function comWhen(at){const d=at?new Date(at):null;return d&&!isNaN(d)?d.toLocaleString():'';}
 function renderCommission(v){const p=$('companel');if(!p)return;if(!v||!v.ok||!v.available){p.classList.add('hide');return;}
@@ -8499,13 +8739,16 @@ function comRestartWait(key,on,label){window._comBusy=true;const t0=Date.now();
   if(Date.now()-t0>90000){window._comBusy=false;$('comnote').textContent='';
    $('combody').innerHTML='<div class="note bad">The panel hasn’t come back after 90 s. Reload the page in a minute; if it still doesn’t answer, reboot the miner.</div>';return;}
   setTimeout(tick,1500);};
- setTimeout(tick,1500);}
+ setTimeout(tick,1500);}/*}owner*/
 function unexpText(u){return '⚠ The miner restarted at about '+hesc(fmtWhen(u.boot_at))+' without the panel asking. It was last seen working at '+hesc(fmtWhen(u.last_seen))+' ('+Math.max(1,Math.round((u.boot_at-u.last_seen)/60))+' min before). '
  +(u.watchdog_known?(u.by_watchdog?'The <b>hardware watchdog</b> restarted it: the control board had stopped.':'The watchdog didn’t cause it: the power was cut, the reset button was used, or it was rebooted from SSH.'):'A power cut, the reset button or a reboot from SSH can do this.');}
+// cfgStoreHTML: the settings storage can't be written (read-only after a power cut) or the start-up check found damage
+// it wouldn't repair (fatstore.go cfgStoreView).
+function cfgStoreHTML(d){const c=d.cfg_store;if(!c)return '';return '<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ <b>'+hesc(c.msg)+'</b>'+(c.fix?' Fix: '+hesc(c.fix):'')+'</div>';}
 function overTempHTML(d){const o=d.over_temp;if(!o)return '';return '<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ <b>'+OemFw()+' shut the hash boards down for heat at '+hesc(fmtWhen(o.at))+'</b>: a board sensor stayed over '+(+o.limit)+' °C for about half a minute. They stay off until the miner reboots. Let it cool, check the fans and the airflow (intake, exhaust, dust), then reboot it (Settings → Restart &amp; reboot).</div>';}
 function chainHTML(d){const hs=(d.board_health||[]).filter(h=>!h.absent&&h.chips>=0&&h.chips<h.expected);if(!hs.length)return '';
  return hs.map(h=>'<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ <b>Board '+h.id+(h.chips===0?' didn’t start: none of its chips answered':(' started with '+h.chips+' of '+h.expected+' chips'))+'</b>'+(h.chips===0?(isOtherModel()&&(MODEL().boards||1)<2?'.':'. The other boards keep mining.'):': part of its chip chain isn’t answering, so it hashes less than it should.')+' Check its data cable (reseat both ends) and its power cable; a cracked joint after a knock does this too. This clears when it starts with all '+h.expected+'.</div>').join('');}
-function unexpHTML(d){const u=d.unexpected_restart;if(!u)return '';return '<div style="grid-column:1/-1;font-size:13px;line-height:1.5;margin-bottom:4px">'+unexpText(u)+' <a href="#" onclick="jpost(\'/api/recovery\',{dismiss:true}).then(refresh);return false">Dismiss</a></div>';}
+function unexpHTML(d){const u=d.unexpected_restart;if(!u)return '';return '<div style="grid-column:1/-1;font-size:13px;line-height:1.5;margin-bottom:4px">'+unexpText(u)+' <a href="#" onclick="jpost(\'/api/recovery\',{dismiss:true}).then(r=>{if(!r.j.ok)toast(r.j.err||\'failed\',true);refresh();});return false">Dismiss</a></div>';}
 async function loadTime(){try{const r=await fetch('/api/time?zones=1');const t=await r.json();renderTime(t);}catch(e){$('timebody').innerHTML=busyHTML(OFFLINE);retryLater(loadTime);}}
 function renderTime(t){const z=browserZone(),opts=(t.zones||[]).map(n=>'<option'+(n===t.zone?' selected':'')+'>'+hesc(n)+'</option>').join('');
  const diff=Math.round((t.now*1000-Date.now())/1000);
@@ -8543,7 +8786,7 @@ async function saveNTP(){const {j}=await jpost('/api/time',{ntp:$('s_ntp').value
  toast('Time server saved: syncing now');setTimeout(loadTime,1500);}
 async function saveNTPPool(on){const {j}=await jpost('/api/time',{ntp_pool:on});if(!j.ok){$('s_ntpmsg').textContent=j.err||'failed';loadTime();return;}
  toast(on?'Public time servers allowed: syncing now':'Public time servers off');setTimeout(loadTime,1500);}
-async function syncNTP(){const {j}=await jpost('/api/time',{sync:true});if(j.ok){$('s_ntpmsg').textContent='syncing… (up to a minute)';setTimeout(loadTime,30000);}}
+async function syncNTP(){const {j}=await jpost('/api/time',{sync:true});if(j.ok){$('s_ntpmsg').textContent='syncing… (up to a minute)';setTimeout(loadTime,30000);}else toast(j.err||'failed',true);}
 // Chip trims (step one, manual): per-chip clock offsets applied inside the miner by the chip-hook copy.
 async function loadChipTrim(){if(featBlock('ctbody',F().ChipTrims,'Chip trims'))return;
  try{const r=await fetch('/api/chiptrim');renderChipTrim(await r.json());}catch(e){$('ctbody').innerHTML=busyHTML(OFFLINE);retryLater(loadChipTrim);}}
@@ -8600,7 +8843,7 @@ function renderChipTrim(c){const L=c.limits||{min:-50,max:0,step:12.5};const bus
   +'<ul><li><b>Prefer:</b> one trim per pair; trim the weak chip and look at its partner again before trimming it too; a + trim on a chip whose partner is clean.</li>'
   +(G.box2?'<li><b>Avoid:</b> − trims on both chips of a pair; + on a chip whose partner is weak; many trims on one board. If the untrimmed chips start making more errors after a few trims, '+G.fix+' instead.</li></ul>':'<li><b>Avoid:</b> − trims on both chips of a pair; + on a chip whose partner is weak; many trims on one board with PV at its floor. If the untrimmed chips start making more errors after a few trims, raise PV a step instead.</li></ul>')
   +'<p><b>The %</b> on each chip is its good results (nonces) since mining started, against its board’s average. A chip a little short of voltage gets more results wrong, and those are thrown away, so its % drops even though its clock is the same. Small counts are mostly luck; the board summary says how much.</p>'
-  +'<p><b>Auto-trim</b> slows chips that keep making far more errors than the rest, one per board at a time and one per pair, and keeps a trim only if it helps. '+(PUB()&&featOff2(F().Tuner)?'':'<b>The tuner</b> can trim the chip that fails a test (Tuner → “Trim weak chips”). ')+'<b>Find strong chips</b> tries running a board’s cleanest chips faster.</p>'
+  +'<p><b>Auto-trim</b> slows chips that keep making far more errors than the rest, one per board at a time and one per pair, and keeps a trim only if it helps. '+(pubNoTunerP()?'':'<b>The tuner</b> can trim the chip that fails a test (Tuner → “Trim weak chips”). ')+'<b>Find strong chips</b> tries running a board’s cleanest chips faster.</p>'
   +'</div></details>';
  if((c.log||[]).length)h+='<details class="ctsec" data-k="log" ontoggle="ctTog(this)"'+ctOpen('log',false)+'><summary class="muted">Library log</summary><pre class="mono" style="font-size:11px;white-space:pre-wrap">'+hesc(c.log.map(l=>{const m=l.match(/^(\d+) (.*)$/);return m?new Date(+m[1]*1000).toLocaleTimeString()+'  '+m[2]:l;}).join('\n'))+'</pre></details>';
  const fe=document.activeElement,fk=fe&&$('ctbody').contains(fe)?(fe.id?'#'+fe.id:fe.dataset.chip!=null?'select[data-chain="'+fe.dataset.chain+'"][data-chip="'+fe.dataset.chip+'"]':fe.tagName==='SUMMARY'&&fe.parentElement.dataset.k?'details[data-k="'+fe.parentElement.dataset.k+'"]>summary':fe.tagName==='BUTTON'&&fe.getAttribute('onclick')?'button[onclick="'+fe.getAttribute('onclick').replace(/["\\]/g,'\\$&')+'"]':''):'';
@@ -8688,7 +8931,7 @@ async function saveMAC(){const m=window._mac||{},v=$('s_macmode').value,mac=($('
  renderMAC(j);return {note:'MAC: '+(v==='fixed'?j.saved:v==='keep'?'keep '+(j.saved||j.current):'random')+' from the next reboot'};}
 // ---- firmware update (Settings) ----
 async function loadUpdate(){if(featOff2(F().FirmwareUpdate)){renderUpdateOff();return;}
- try{const r=await fetch('/api/update');renderUpdate(await r.json());}catch(e){$('updbody').innerHTML=busyHTML(OFFLINE);if(updProgGet())updProgInSettings();retryLater(loadUpdate);}}
+ try{const r=await fetch('/api/update');renderUpdate(await r.json());}catch(e){$('updbody').innerHTML=busyHTML(OFFLINE);updProgInSettings();retryLater(loadUpdate);}}
 function updWhen(t){return t?new Date(t*1000).toLocaleString():'';}
 // renderUpdateOff: on a model whose FirmwareUpdate gate is off (SD-card-only install), the in-panel
 // update/rollback is replaced by settings export/import (coordinated with B7). Endpoints:
@@ -8735,7 +8978,7 @@ function renderUpdate(u,latest){if(u&&u.image){renderImageUpdate(u,latest);retur
    +'<div class="full"><button onclick="updRepo()">Save</button> <span class="muted" style="font-size:11.5px">owner/name, for your own build or a fork. Empty: '+hesc(u.default_repo)+'.</span></div></div></details></div>';}
  if(u.can_rollback&&!u.staged)h+='<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px"><button onclick="updRollback()">Roll back to the previous version</button> <span class="muted" style="font-size:11.5px">reboots and puts back the files the last update replaced as it starts</span></div>';
  h+='<div class="muted" style="font-size:11.5px;margin-top:12px">A full SD-card flash always works as well, for a first install or if anything goes wrong.</div>';
- $('updbody').innerHTML=h;if(updProgGet())updProgInSettings();
+ $('updbody').innerHTML=h;updProgInSettings();
  if(latest)updShowLatest(latest);}
 function updMigHTML(m){const st=m.stock||'';
  let h='<div class="note" style="margin-top:10px"><b>v1.5.6: a fresh start for tuning</b> <span class="muted">'+hesc(updWhen(m.at))+'</span>'
@@ -8794,9 +9037,8 @@ async function updInstall(){const s=(window._upd||{}).staged||{},inst=(window._u
  let ib={install:true};
  if((window._upd||{}).rollback_needs_password&&s.version&&verLess(s.version,'1.5.22')){const pw=await askPassword('Versions before v1.5.22 store the password differently. Enter your password once, so v'+s.version+' can still sign you in:');if(pw===null)return;ib.password=pw;}
  if((window._upd||{}).install_needs_password&&!ib.password){const pw=await askPassword('Installing firmware needs your panel password:');if(pw===null)return;ib.password=pw;}
- const {j}=await jpost('/api/update',ib);if(!j.ok){toast(j.err||'failed',true);loadUpdate();return;}
- updProgSet(s.version?'v'+String(s.version).replace(/^v/,''):'','pkg');updProgInSettings();
- toast(j.note||'installed: rebooting');window._rebStart=Date.now();window._rebNominal=150000;if(typeof refresh==='function')setTimeout(refresh,1500);}
+ const {j}=await jpost('/api/update',ib);if(!j.ok&&!j.noreply){toast(j.err||'failed',true);loadUpdate();return;}
+ updInstallGoing(j,s.version?'v'+String(s.version).replace(/^v/,''):'','pkg');}
 // the login text: what the password is stored as (SHA-256 only until the first sign-in after the update, or
 // while an update waits to be confirmed)
 function pwAlgo(a,waits){const el=$('pwalgo');if(!el||!a)return;el.innerHTML=a.indexOf('BLAKE2b')>=0
@@ -8846,7 +9088,7 @@ function renderImageUpdate(u,latest){window._upd=u;const v=u.version||'',pat=u.a
  h+='<details style="margin-top:8px"><summary class="muted" style="font-size:12.5px"><b>Settings backup</b>: export, or import after an SD-card recovery</summary>'
   +'<div class="row" style="gap:8px;align-items:center;margin-top:6px"><button onclick="settingsExport()">Export settings (.json)</button><span class="muted" style="font-size:11.5px">network, fan curves, presets, schedule and notifications — not the pools, hostname, time settings, passwords or secrets</span></div>'
   +'<div class="row" style="gap:8px;align-items:center;margin-top:8px"><input type="file" id="setimport" accept=".json,application/json" style="max-width:20rem"><button onclick="settingsImport()">Import settings</button><span class="muted" id="setimpmsg" style="font-size:11.5px"></span></div></details>';
- if(!PUB())h+='<div class="note" style="margin-top:8px;font-size:12px"><span class="st-run">●</span> <b>This is the commissioning build.</b> “Check for updates” offers the public release, which has no Commissioning section and a fixed set of features. Install commissioning builds with <b>Upload the file</b>.</div>';
+ /*owner{*/if(!PUB())h+='<div class="note" style="margin-top:8px;font-size:12px"><span class="st-run">●</span> <b>This is the commissioning build.</b> “Check for updates” offers the public release, which has no Commissioning section and a fixed set of features. Install commissioning builds with <b>Upload the file</b>.</div>';/*}owner*/
  if(busy&&busy!=='verifying')h+='<div class="note" style="margin-top:10px">'+hesc(busy)+'…</div>';
  h+=imgChainHTML();
  // ① get the file
@@ -8857,7 +9099,9 @@ function renderImageUpdate(u,latest){window._upd=u;const v=u.version||'',pat=u.a
  else b1='<div class="row" style="gap:8px;margin-top:8px;align-items:center"><button class="primary" onclick="updCheck()">Check for updates</button><span class="muted" id="updcheck" style="font-size:12px"></span></div>'
   +'<div class="muted" style="font-size:11.5px;margin-top:4px">The miner looks up the latest release on GitHub (it needs internet).</div><div id="updlatest"></div>'
   +'<div style="margin-top:12px"><b style="font-size:13px">Or upload the file</b> <span class="muted" style="font-size:11.5px">the <span class="mono">'+hesc(pat)+'</span> from the release page</span>'
-  +'<div class="row" style="gap:8px;align-items:center;margin-top:6px"><input type="file" id="imgfile" accept=".ius" style="max-width:20rem"><button onclick="imgUpload()">Upload</button><span class="muted" id="imgmsg" style="font-size:12px"></span></div></div>'
+  +'<div class="row" style="gap:8px;align-items:center;margin-top:6px"><input type="file" id="imgfile" accept=".ius" style="max-width:20rem"><button onclick="imgUpload()">Upload</button><span class="muted" id="imgmsg" style="font-size:12px"></span></div>'
+  +'<div style="margin-top:8px"><label class="muted" for="imgsums0" style="font-size:11.5px">Its line from the release’s <span class="mono">SHA256SUMS</span> <span class="muted">(optional: paste it now and step ② needs nothing more from you)</span></label>'
+  +'<textarea id="imgsums0" rows="2" class="mono" style="width:100%;font-size:11.5px;margin-top:4px" placeholder="paste the line (or the whole SHA256SUMS file) here"></textarea></div></div>'
   +'<details style="margin-top:10px"><summary class="muted" style="font-size:12px">Update source</summary><div class="setgrid" style="margin-top:6px"><label>GitHub repository</label><input id="updrepo" class="mono" value="'+hesc(u.repo)+'" placeholder="'+hesc(u.default_repo)+'">'
   +'<div class="full"><button onclick="updRepo()">Save</button> <span class="muted" style="font-size:11.5px">owner/name, for your own build or a fork. Empty: '+hesc(u.default_repo)+'.</span></div></div></details>';
  h+=imgStep(1,'Get the update file',s?'done':(chr||busy==='downloading'||busy==='receiving')?'run':'you',b1);
@@ -8903,7 +9147,7 @@ function renderImageUpdate(u,latest){window._upd=u;const v=u.version||'',pat=u.a
    +'<div class="row" style="margin-top:12px;gap:8px;align-items:center"><button class="primary" id="imginst" onclick="imgInstall()" disabled>Install '+(ver?hesc(ver):'the update')+' and restart</button><span class="muted" id="imginsthint" style="font-size:12px"></span></div>'
    +'<div class="muted" style="font-size:11.5px;margin-top:6px">Mining stops for about 4 minutes. Keep the power on and this page open.</div>';}
  h+=imgStep(3,'Install',bad?'wait':can?'you':'wait',b3);
- $('updbody').innerHTML=h;if(updProgGet())updProgInSettings();
+ $('updbody').innerHTML=h;updProgInSettings();
  imgAckUI();
  if(latest&&!s)imgShowLatest(latest);
  // step ② runs by itself once a file is here (Verify writes nothing), once per file
@@ -9008,9 +9252,8 @@ async function imgQuick(tag){if(!imgQAll()){toast('Tick all four boxes first',tr
  if(s.ready!=='ok'){const f=(s.checks||[]).find(x=>!x.ok);return stop('The miner isn’t ready for it'+(f?': '+f.msg:'')+'.',j);}
  c.stage=2;window._upd=j;renderImageUpdate(j);
  ({j}=await jpost('/api/update',Object.assign({install:true,ack:true},qpw?{password:qpw}:{})));
- if(!j||!j.ok)return stop('The install didn’t start'+(j&&j.err?': '+j.err:'')+'.');
- c.stage=3;c.ok=true;imgChainShow();updProgSet(tag||'');updProgInSettings();
- toast(j.note||'writing: the miner restarts');window._rebStart=Date.now();window._rebNominal=240000;if(typeof refresh==='function')setTimeout(refresh,1500);}
+ if(!j||(!j.ok&&!j.noreply))return stop('The install didn’t start'+(j&&j.err?': '+j.err:'')+'.');
+ c.stage=3;c.ok=true;imgChainShow();updInstallGoing(j,tag||'','image');}
 function imgStep(n,title,state,body){
  const tag={done:'<b class="okpill">Done</b>',you:'<b style="color:var(--warn)">Needs you</b>',bad:'<b class="badpill">Stopped</b>',run:'<span class="muted">Working…</span>',wait:'<span class="muted">Waiting</span>'}[state]||'';
  const dot={done:'ok',you:'you',bad:'bad'}[state];
@@ -9038,13 +9281,17 @@ function imgShowLatest(l){const el=$('updlatest');if(!el)return;
    :'<div class="muted" style="font-size:12px;margin-top:6px">This release has no firmware file for this model: use its SD image instead.</div>')+'</div>';}
 async function imgFetch(){const el=$('updlatest');if(el)el.innerHTML='<div class="note" style="margin-top:8px">Downloading… (a minute or so)<div class="rbar indet" style="margin-top:6px"><div class="rfill"></div></div></div>';
  await updPost({fetch:true});}
-async function imgUpload(){const f=($('imgfile').files||[])[0],m=$('imgmsg');if(!f){m.textContent='choose the file first';return;}
+async function imgUpload(){const f=($('imgfile').files||[])[0],m=$('imgmsg'),sums0=($('imgsums0')||{}).value||'';if(!f){m.textContent='choose the file first';return;}
  if(f.size>24*1048576){m.textContent='that file is too big for a firmware file (the .img is for SD cards)';return;}
  m.textContent='uploading 0 %';
  const xhr=new XMLHttpRequest();xhr.open('POST','/api/update/upload?name='+encodeURIComponent(f.name));xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-Requested-With','panel');
  xhr.upload.onprogress=e=>{if(e.lengthComputable)m.textContent=e.loaded<e.total?('uploading '+Math.round(e.loaded/e.total*100)+' %'):'reading the file…';};
  xhr.onload=()=>{let j={};try{j=JSON.parse(xhr.responseText);}catch(e){}
-  if(!j.ok){m.textContent=j.err||('upload failed ('+xhr.status+')');return;}renderUpdate(j);};
+  if(!j.ok){m.textContent=j.err||('upload failed ('+xhr.status+')');return;}
+  // (v0.5.6) the SHA256SUMS line pasted with the file: given to the check first, so one check does it all
+  const t=sums0,sha=(j.staged||{}).sha256;
+  if(t.trim()&&sha){window._imgAuto=sha;renderUpdate(j);imgSumsThenVerify(t);return;}
+  renderUpdate(j);};
  xhr.onerror=()=>{m.textContent='upload failed';};xhr.send(f);}
 async function imgDiscard(){window._imgAck=null;window._imgAuto=null;await updPost({discard:true});}
 // imgVerify: step ②, the backend's Verify (reads only: the file, the release's SHA256SUMS online, the system partition)
@@ -9052,15 +9299,24 @@ async function imgVerify(){if(window._imgVerifying)return;window._imgVerifying=t
  try{if(window._upd&&window._upd.image)renderImageUpdate(window._upd);await updPost({verify:true});}finally{window._imgVerifying=false;}
  if(window._upd&&window._upd.image)renderImageUpdate(window._upd);}
 async function imgSums(){const t=($('imgsums')||{}).value||'';if(!t.trim()){toast('Paste the line from SHA256SUMS first',true);return;}
- const j=await updPost({sums:t});if(j&&j.staged)toast(j.staged.genuine?'It matches: the file is genuine':'That doesn’t match this file',!j.staged.genuine);}
+ await imgSumsThenVerify(t);}
+// imgSumsThenVerify: the pasted SHA256SUMS text, then (on a match) the miner's check straight away if it hasn't
+// passed yet, so step ② needs one click (v0.5.6: it needed Check, then the paste, then Check again)
+async function imgSumsThenVerify(t){const j=await updPost({sums:t});if(!j||!j.staged)return;
+ toast(j.staged.genuine?'It matches: the file is genuine':'That doesn’t match this file',!j.staged.genuine);
+ if(j.staged.genuine&&j.staged.ready!=='ok')await imgVerify();}
 async function imgInstall(){const s=(window._upd||{}).staged||{};
  if(!window._imgCan){toast('Wait for step ② to pass first',true);return;}
  if(!imgAckAll()){toast('Tick all four boxes first',true);return;}
  const pw=imgPw('imgpw');if(pw===null){toast('Enter your panel password first',true);const e=$('imgpw');if(e&&e.focus)e.focus();return;}
  if(!confirm('Install '+(s.version?'v'+s.version:'the update')+' now?\n\nMining stops for about 4 minutes while the miner writes the new system (2–3 minutes) and restarts. Keep the power on.\n\nIf anything goes wrong, the SD card brings the miner back (that erases saved settings).'))return;
- const {j}=await jpost('/api/update',Object.assign({install:true,ack:true},pw?{password:pw}:{}));if(!j.ok){toast(j.err||'failed',true);loadUpdate();return;}
- updProgSet(s.version?'v'+String(s.version).replace(/^v/,''):'');updProgInSettings();
- toast(j.note||'writing: the miner restarts');window._rebStart=Date.now();window._rebNominal=240000;if(typeof refresh==='function')setTimeout(refresh,1500);}
+ const {j}=await jpost('/api/update',Object.assign({install:true,ack:true},pw?{password:pw}:{}));if(!j.ok&&!j.noreply){toast(j.err||'failed',true);loadUpdate();return;}
+ updInstallGoing(j,s.version?'v'+String(s.version).replace(/^v/,''):'','image');}
+// updInstallGoing: the install was asked for and not refused: its progress in Settings (and on the dashboard while the
+// miner is away), across the reload the new panel causes. j.noreply: the panel handed off before its answer got out.
+function updInstallGoing(j,ver,kind){updProgSet(ver,kind,!j.ok);updProgInSettings();
+ toast(j.ok?(j.note||(kind==='pkg'?'installed: rebooting':'writing: the miner restarts')):'The miner stopped answering as the install began: it is most likely installing now. Keep the power on; this page reconnects by itself.');
+ window._rebStart=Date.now();window._rebNominal=kind==='pkg'?150000:240000;if(typeof refresh==='function')setTimeout(refresh,1500);}
 async function loadPower(){if(featBlock('powerbody',F().PowerEstimate,'The power estimate'))return;
  try{const r=await fetch('/api/power');renderPower(await r.json());}catch(e){$('powerbody').innerHTML=busyHTML(OFFLINE);retryLater(loadPower);}}
 function renderPower(p){if(isOtherModel()){renderPowerBox2(p);return;}window._powF=p.factor||0;window._powMains=p.mains_v||100;
@@ -9079,31 +9335,32 @@ async function calibratePower(){const w=+$('s_calw').value;if(!(w>0)){$('s_powms
  const {j}=await jpost('/api/power',{cal_watts:w});if(!j.ok){$('s_powmsg').textContent=j.err||'failed';return;}
  toast('Calibrated: '+Math.round(w)+' W at '+j.mhz+' MHz · PV '+j.pv);renderPower(j);if(typeof refresh==='function')refresh();}
 async function clearPowerCal(){if(!confirm('Clear the wall-meter calibration?\n\nWatts go back to typical SC Lite figures.'))return;
- const {j}=await jpost('/api/power',{clear:true});if(j.ok){toast('Calibration cleared');renderPower(j);if(typeof refresh==='function')refresh();}}
-// Box II (planBox2V): a per-setting table of wall-meter readings, the OEM's published figure for an uncalibrated
-// stock mode, nothing for any other setting (power_box2.go). The SC Lite text above is never shown here.
+ const {j}=await jpost('/api/power',{clear:true});if(j.ok){toast('Calibration cleared');renderPower(j);if(typeof refresh==='function')refresh();}else toast(j.err||'failed',true);}
+// Box II (planBox2V): a per-setting table of wall-meter readings; without one, an estimate from wall-meter readings
+// taken on one unit (that unit's reading at its own settings, the curve through them elsewhere in 525–750 MHz:
+// power_box2.go). The SC Lite text above is never shown here.
 function pwSetting(m,v){return m+' MHz · '+boxVoltsTxt(v);}
-function pwSrcText(p){return p.source==='meter'?'wall meter':(p.source==='spec'?'OEM spec ±'+(p.spec_tol_pct||5)+' %':'');}
+function pwSrcText(p){return p.source==='meter'?'wall meter':(p.source==='measured'?'measured on one unit, yours may differ by a few %':(p.source==='estimate'?'estimate from readings on one unit':''));}
 function renderPowerBox2(p){window._powF=p.calibrated?1:0;window._powMains=p.mains_v||100;const nm=hesc(modelName());
- const cals=p.cals||[],specs=p.specs||[],seen={};let rows='';
+ const cals=p.cals||[],specs=p.points||[],seen={};let rows='';
  specs.forEach(s=>{const k=cals.find(c=>c.mhz===s.mhz&&c.v===s.v);seen[s.mhz+'/'+s.v]=1;
-  rows+='<tr><td>'+hesc(b2Name(s.mode))+'</td><td>'+pwSetting(s.mhz,s.v)+'</td><td class="num">'+(k?('<b>'+Math.round(k.watts)+' W</b>'):'<span class="muted">not calibrated</span>')+'</td><td class="num">≈ '+Math.round(s.watts)+' W · '+s.ths+' TH/s</td><td>'+(k?('<span class="muted">'+hesc(new Date(k.at*1000).toLocaleString())+' · '+(k.ghs/1000).toFixed(2)+' TH/s</span> <button onclick="clearPowerCalBox2('+k.mhz+','+k.v+')">Clear</button>'):'')+'</td></tr>';});
+  rows+='<tr><td>'+(s.mode?hesc(b2Name(s.mode)):'overclock')+'</td><td>'+pwSetting(s.mhz,s.v)+'</td><td class="num">'+(k?('<b>'+Math.round(k.watts)+' W</b>'):'<span class="muted">not calibrated</span>')+'</td><td class="num">≈ '+Math.round(s.watts)+' W · '+s.ths+' TH/s</td><td>'+(k?('<span class="muted">'+hesc(new Date(k.at*1000).toLocaleString())+' · '+(k.ghs/1000).toFixed(2)+' TH/s</span> <button onclick="clearPowerCalBox2('+k.mhz+','+k.v+')">Clear</button>'):'')+'</td></tr>';});
  cals.filter(k=>!seen[k.mhz+'/'+k.v]).forEach(k=>{rows+='<tr><td>other</td><td>'+pwSetting(k.mhz,k.v)+'</td><td class="num"><b>'+Math.round(k.watts)+' W</b></td><td class="num"><span class="muted">—</span></td><td><span class="muted">'+hesc(new Date(k.at*1000).toLocaleString())+' · '+(k.ghs/1000).toFixed(2)+' TH/s</span> <button onclick="clearPowerCalBox2('+k.mhz+','+k.v+')">Clear</button></td></tr>';});
  const now=p.watts?('<b>'+(p.calibrated?'':'≈ ')+Math.round(p.watts)+' W</b>'+(p.jth?(' · '+p.jth+' J/TH'):'')+' · '+f1(p.amps)+' A at '+pwSetting(p.mhz,p.vcode)+' <span class="muted">('+pwSrcText(p)+')</span>'+(p.low_hash?('<div class="muted" style="color:var(--warn)">'+hesc(p.low_hash_note||'')+'</div>'):'')):('<span class="muted">'+hesc(p.reason||'shown while it’s hashing')+'</span>');
- $('powerbody').innerHTML='<div class="muted" style="font-size:11.5px">The '+nm+' has no power sensor, and its watts can’t be worked out from the clock and voltage.'+imgMore('How the figures work','Each setting it runs gets its own reading from a plug-in wall meter. Until a stock mode has one, it shows the OEM’s published figure for that mode (±5 %). Any other setting shows no figure until you calibrate it. J/TH is the watts ÷ the hashrate the miner reports.')+'</div>'+
+ $('powerbody').innerHTML='<div class="muted" style="font-size:11.5px">The '+nm+' has no power sensor. Without your own wall-meter reading, the watts shown (≈) are an estimate measured on one unit.'+imgMore('How the figures work','Each setting can get its own reading from a plug-in wall meter: that is exact for your miner. Until it has one, the figure is an estimate from wall-meter readings taken on one unit (the table below: the OEM states 400 W and 260 W for the two stock modes; that unit drew 392 W and 252 W). Between and past those settings, from 525 to 750 MHz and every voltage step, the estimate follows the curve through them (power grows with the clock and with the square of the voltage). Another unit may differ by a few %. J/TH is the watts ÷ the hashrate the miner reports.')+'</div>'+
   '<div class="ninfo" style="margin-top:10px"><div><span class="muted">Now</span> &nbsp;'+now+'</div></div>'+
-  '<div class="ctwrap" style="margin-top:10px;border:none"><table class="ctable"><thead><tr><th>Mode</th><th>Setting</th><th class="num">Wall meter</th><th class="num">OEM spec</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+  '<div class="ctwrap" style="margin-top:10px;border:none"><table class="ctable"><thead><tr><th>Mode</th><th>Setting</th><th class="num">Your wall meter</th><th class="num">Measured on one unit</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
   '<div class="setgrid" style="margin-top:10px"><label>Mains voltage (V)</label><input id="s_mainsv" type="number" min="90" max="260" step="1" value="'+Math.round(p.mains_v||100)+'">'+
   '<div class="full"><button onclick="savePowerMains()">Save voltage</button> <span class="muted" style="font-size:11.5px">Only for amps. Japan 100 V, North America 120 V, most other places 220–240 V.</span></div>'+
   '<label>Wall meter now (W)</label><input id="s_calw" type="number" min="50" max="1200" step="1" placeholder="e.g. 400">'+
   '<div class="full"><button class="primary" onclick="calibratePowerBox2()">Calibrate this setting</button>'+(cals.length?' <button onclick="clearPowerCalBox2()">Clear all</button>':'')+' <span class="muted" id="s_powmsg"></span>'+
-  '<div class="muted" style="font-size:11.5px;margin-top:4px">'+imgMore('How to calibrate','Plug the miner and its power supply (nothing else) into the meter, let it hash at one setting for 10 minutes, then enter what the meter shows. The clock and voltage the miner reports now are recorded with it. Do this once in each mode.',cals.length?'':'you')+'</div></div></div>';}
+  '<div class="muted" style="font-size:11.5px;margin-top:4px">'+imgMore('How to calibrate','Plug the miner and its power supply (nothing else) into the meter, let it hash at one setting for 10 minutes, then enter what the meter shows. The clock and voltage the miner reports now are recorded with it, and that setting then shows your reading instead of the estimate. Do this once in each setting you run.',cals.length?'':'you')+'</div></div></div>';}
 async function calibratePowerBox2(){const w=+$('s_calw').value;if(!(w>0)){$('s_powmsg').textContent='enter the meter reading';return;}
  const {j}=await jpost('/api/power',{cal_watts:w});if(!j.ok){$('s_powmsg').textContent=j.err||'failed';return;}
  toast('Calibrated: '+Math.round(w)+' W at '+pwSetting(j.mhz,j.vcode)+(j.note?(' · '+j.note):''));renderPowerBox2(j);if(typeof refresh==='function')refresh();}
 async function clearPowerCalBox2(m,v){const one=m!=null;
- if(!confirm(one?('Clear the wall-meter reading for '+pwSetting(m,v)+'?\n\nA stock mode goes back to the OEM’s published figure; any other setting shows no figure.'):'Clear every wall-meter reading?\n\nThe stock modes go back to the OEM’s published figure; any other setting shows no figure.'))return;
- const {j}=await jpost('/api/power',one?{clear_mhz:m,clear_v:v}:{clear:true});if(j.ok){toast('Calibration cleared');renderPowerBox2(j);if(typeof refresh==='function')refresh();}}
+ if(!confirm(one?('Clear the wall-meter reading for '+pwSetting(m,v)+'?\n\nIt goes back to the estimate measured on one unit.'):'Clear every wall-meter reading?\n\nEvery setting goes back to the estimate measured on one unit.'))return;
+ const {j}=await jpost('/api/power',one?{clear_mhz:m,clear_v:v}:{clear:true});if(!j||!j.ok){toast('Not cleared: '+((j&&j.err)||'no answer from the miner'),true);return;}toast('Calibration cleared');renderPowerBox2(j);if(typeof refresh==='function')refresh();}
 async function saveTZ(z){const {j}=await jpost('/api/time',{zone:z});if(!j.ok){$('s_tzmsg').textContent=j.err||'failed';return;}
  toast('Time zone set to '+z+'. The miner’s own log lines switch at its next restart (Settings → Restart & reboot → Restart mining).');loadTime();}
 function discHTML(ackDate){const b=
@@ -9173,11 +9430,11 @@ function renderDisplay(d){const u=(d&&d.share_unit)||window._shareUnit||'both';w
 async function saveDisplay(){const r=document.querySelector('input[name=s_share]:checked');if(!r)return;
  window._shareUnit=r.value;$('dispnote').textContent=SHARELBL[r.value]||'';
  const {j}=await jpost('/api/display',{share_unit:r.value});
- if(j.ok){renderDisplay({share_unit:r.value,hash_unit:window._hrUnit});if(typeof refresh==='function')refresh();}}
+ if(j.ok){renderDisplay({share_unit:r.value,hash_unit:window._hrUnit});if(typeof refresh==='function')refresh();}else toast(j.err||'failed',true);}
 async function saveHashDisplay(){const r=document.querySelector('input[name=s_hash]:checked');if(!r)return;
  window._hrUnit=r.value;
  const {j}=await jpost('/api/display',{hash_unit:r.value});
- if(j.ok){if(typeof refresh==='function')refresh();if(typeof loadHashrate==='function')loadHashrate();}}
+ if(j.ok){if(typeof refresh==='function')refresh();if(typeof loadHashrate==='function')loadHashrate();}else toast(j.err||'failed',true);}
 function renderAccount(a){$('acctbody').innerHTML='<div class="setgrid">'+
  '<label>Username</label><input id="s_user" value="'+hesc(a.username||'')+'">'+
  '<label>Current password</label><input id="s_pwcur" type="password" placeholder="needed to change the username or password" autocomplete="current-password">'+
@@ -9409,14 +9666,15 @@ function chipTipHtml(k){const d=window._chipdata;if(!d)return'';const p=k.split(
  else if(c.health==='watch')s+='<br><span style="color:var(--text)">▲ watch — '+hesc(c.why||'')+'</span>';
  else s+='<br><span style="color:var(--ok)">✓ healthy</span>'+(c.why?('<br><span class="muted">'+hesc(c.why)+'</span>'):'');
  return s;}
-function wireChipTip(){if(window._chiptipwired)return;window._chiptipwired=true;
- const tip=document.createElement('div');tip.className='cmtip';tip.id='cmtip';document.body.appendChild(tip);
- const host=$('chips');if(!host)return;
+function wireChipTip(){if(window._chiptipwired)return;const host=$('chips');if(!host)return;window._chiptipwired=true;cellTip(host,'.cell',chipTipHtml);}
+// cellTip: the chip maps' hover box (the Dashboard's and the Tuner's): one shared box, anchored to the chip cell
+function cellTip(host,sel,html){let tip=$('cmtip');if(!tip){tip=document.createElement('div');tip.className='cmtip';tip.id='cmtip';document.body.appendChild(tip);}
  let _tipk='';
- host.addEventListener('mousemove',e=>{const c=e.target.closest('.cell');if(!c){tip.style.display='none';_tipk='';return;}
+ host.addEventListener('mousemove',e=>{const c=e.target.closest(sel);if(!c||!c.dataset.k){tip.style.display='none';_tipk='';return;}
    // anchor to the chip CELL (not the cursor) so every chip's tooltip sits in the same spot:
    // centred, just above the cell; flip below only if there isn't room above.
-   if(c.dataset.k!==_tipk){tip.innerHTML=chipTipHtml(c.dataset.k);_tipk=c.dataset.k;}
+   const th0=html(c.dataset.k);if(!th0){tip.style.display='none';_tipk='';return;}
+   if(c.dataset.k!==_tipk||th0!==tip._h){tip.innerHTML=th0;tip._h=th0;_tipk=c.dataset.k;} // a redraw can change the same chip's numbers
    tip.style.display='block';
    const r=c.getBoundingClientRect(),tw=tip.offsetWidth,th=tip.offsetHeight;
    let x=r.left+r.width/2-tw/2;x=Math.max(8,Math.min(x,innerWidth-tw-8));
@@ -9468,9 +9726,12 @@ function startRebootTick(){if(window._rebTick)return;
 function stopRebootTick(){if(window._rebTick){clearInterval(window._rebTick);window._rebTick=null;}}
 // firmware-image install progress on the dashboard (image-update models): kept in this browser across the reload the new
 // panel causes, so the page that started it shows each stage, then the result from Settings' last-update note.
-function updProgSet(ver,kind){const pk=kind==='pkg',p={ver:ver||'',kind:pk?'pkg':'image',at:Date.now(),ms:pk?150000:240000,down:false};window._updProg=p;updProgSave(p);}
+// unsure: the install request went out but its answer was lost (the panel handed off to the installer first), so
+// the install most likely runs: the progress shows all the same, and if the panel goes on answering, it didn't start.
+function updProgSet(ver,kind,unsure){const pk=kind==='pkg',p={ver:ver||'',from:String((window._upd&&window._upd.version)||''),kind:pk?'pkg':'image',at:Date.now(),ms:pk?150000:240000,down:false,unsure:!!unsure};window._updProg=p;updProgSave(p);}
 function updProgSave(p){try{localStorage.setItem('fw-updprog',JSON.stringify(p));}catch(e){}}
-function updProgGet(){if(window._updProg!==undefined)return window._updProg;let p=null;
+// (none kept: read again, so another open page of this panel picks up an install started here)
+function updProgGet(){if(window._updProg)return window._updProg;let p=null;
  try{p=JSON.parse(localStorage.getItem('fw-updprog')||'null');}catch(e){}
  if(!p||typeof p.at!=='number'||!(Date.now()-p.at<30*60000))p=null;window._updProg=p;return p;}
 function updProgClear(){window._updProg=null;try{localStorage.removeItem('fw-updprog');}catch(e){}stopUpdTick();}
@@ -9487,19 +9748,35 @@ function updProgHTML(p){const t=Date.now()-p.at,f=Math.min(0.96,Math.max(0.02,t/
   +(late?'<div style="font-size:12.5px;margin-top:6px;color:var(--bad)">This is taking much longer than it should. Keep the miner powered. If it isn’t back within 15 minutes, recover it with an SD card'+(p.kind==='pkg'?' with the firmware':' (Settings → Firmware update → How to recover with an SD card)')+'.</div>':'')+'</div>';}
 function startUpdTick(){if(window._updTick)return;window._updTick=setInterval(()=>{const p=updProgGet(),es=document.querySelectorAll('.updprog');if(!es.length||!p){stopUpdTick();return;}es.forEach(e=>{e.outerHTML=updProgHTML(p);});},1000);}
 // updProgInSettings: the same progress in Settings → Firmware update, where the install was started
-function updProgInSettings(){const p=updProgGet(),b=$('updbody');if(!p||!b)return;
- b.innerHTML='<!--updprog-->'+updProgHTML(p)+'<!--/updprog-->'+String(b.innerHTML||'').replace(/<!--updprog-->[\s\S]*?<!--\/updprog-->/g,'');startUpdTick();}
+// in place of the steps (an Install button there, mid-install, would only mislead); none running: how the last one
+// went, once it's back, until dismissed
+function updProgInSettings(){const p=updProgGet(),b=$('updbody');if(!b)return;const rest=String(b.innerHTML||'').replace(/<!--upd(prog|done)-->[\s\S]*?<!--\/upd(prog|done)-->/g,'');
+ if(p){b.innerHTML='<!--updprog-->'+updProgHTML(p)+'<!--/updprog-->';startUpdTick();}
+ else if(window._updDone)b.innerHTML='<!--upddone--><div style="max-width:520px;margin-bottom:8px">'+window._updDone+'</div><!--/upddone-->'+rest;}
+function updDoneDismiss(){window._updDone='';const b=$('updbody');if(b)b.innerHTML=String(b.innerHTML||'').replace(/<!--upddone-->[\s\S]*?<!--\/upddone-->/g,'');refresh();}
 function stopUpdTick(){if(window._updTick){clearInterval(window._updTick);window._updTick=null;}}
 // updProgShow: the dashboard's overview shows the install while the miner is away (true = shown)
 function updProgShow(){const p=updProgGet();if(!p)return false;if(!p.down){p.down=true;updProgSave(p);}
  $('ov').innerHTML='<div style="grid-column:1/-1">'+updProgHTML(p)+'</div>';startUpdTick();return true;}
 // updProgBack: the panel answers again after the install: say how it went (last-update note), once
-async function updProgBack(){const p=updProgGet();if(!p||(!p.down&&Date.now()-p.at<90000))return;updProgClear(); // (not seen going down after 90 s: the install didn't start)
-
- let u={};try{const r=await fetch('/api/update');u=await r.json();}catch(e){}
- const l=u.last||{},ok=l.result==='installed',now=u.version?'v'+String(u.version).replace(/^v/,''):'';
+async function updProgBack(){const p=updProgGet();if(!p)return;
+ const nv=x=>String(x||'').replace(/^v/,'');
+ let u=null;
+ if(!p.down){ // the panel never went away: after 20 s (its answer lost) or 90 s, ask how the update stands before saying anything
+  if(Date.now()-p.at<(p.unsure?20000:90000))return;
+  try{const r=await fetch('/api/update');u=await r.json();}catch(e){return;} // (can't ask now: at the next poll)
+  const l=(u&&u.last)||{},noted=typeof l.at==='number'&&l.at*1000>=p.at-5000, // a result written since the click
+   moved=!!(p.ver&&u&&u.version&&nv(u.version)===nv(p.ver)&&(!p.from||nv(p.from)!==nv(p.ver))); // already running it
+  if(!noted&&!moved){if(u&&u.busy)return; // still busy with it: wait
+   updProgClear();toast('The install didn’t start: see Settings → Firmware update',true);if(typeof loadUpdate==='function')loadUpdate();return;}
+ }
+ updProgClear();
+ if(!u){u={};try{const r=await fetch('/api/update');u=await r.json();}catch(e){}}
+ const l=u.last||{},now=u.version?'v'+nv(u.version):'',
+  ok=((l.result==='installed'||l.result==='written')&&!(l.to&&p.ver&&nv(l.to)!==nv(p.ver)))
+   ||(l.result!=='failed'&&!!(p.ver&&u.version&&nv(u.version)===nv(p.ver)&&p.from&&nv(p.from)!==nv(p.ver))); // (running the new version)
  window._updDone='<div class="note '+(ok?'':'warn')+'" style="grid-column:1/-1;margin-bottom:6px">'+(ok?'✓ Firmware update finished'+(now?': now running '+hesc(now):'')+'.':'⚠ The firmware update didn’t finish as planned'+(now?' (running '+hesc(now)+')':'')+(l.note?': '+hesc(l.note):'')+'. Details in Settings → Firmware update.')
-  +' <a href="#" onclick="window._updDone=\'\';refresh();return false">dismiss</a></div>';
+  +' <a href="#" onclick="updDoneDismiss();return false">dismiss</a></div>';
  toast(ok?'Firmware update finished':'The firmware update didn’t finish: see Settings → Firmware update',!ok);refresh();if(typeof loadUpdate==='function')loadUpdate();}
 const PAGE_BUILD='__PAGE_BUILD__';
 async function refresh(){try{const r=await fetch('/api/dashboard',fetchTO(15000));if(r.status===401){boot();return;}const d=await r.json().catch(()=>{throw {http:r.status};});window._noPool=!!d.no_pool;window._offSince=0;
@@ -9513,7 +9790,7 @@ async function refresh(){try{const r=await fetch('/api/dashboard',fetchTO(15000)
   if(d.restarting&&updProgShow())return;
   if(d.restarting){rebootSeed(150000,d.reboot_pct);$('ov').innerHTML='<div style="grid-column:1/-1">'+rebootingHTML(d.err)+'</div>';return;}
   rebootClear();$('ov').innerHTML=d.idle?('<div class="note" style="grid-column:1/-1">☾ '+hesc(d.err)+' <button onclick="showTab(\'presets\')">Presets</button></div>'):d.starting?('<div style="grid-column:1/-1">'+busyHTML(d.err)+'</div>'):d.no_pool?('<div class="note warn" style="grid-column:1/-1">'+hesc(d.err)+' <button class="primary" onclick="showTab(\'pools\')">Go to Pools</button></div>'):('<div style="grid-column:1/-1;color:var(--bad)">'+hesc(d.err||'API error')+'</div>');
-  {const ot=overTempHTML(d)+chainHTML(d)+unexpHTML(d);if(ot)$('ov').insertAdjacentHTML('afterbegin',ot);}return;}
+  {const ot=cfgStoreHTML(d)+overTempHTML(d)+chainHTML(d)+unexpHTML(d);if(ot)$('ov').insertAdjacentHTML('afterbegin',ot);}return;}
  // recovered — clear any reboot progress state
  rebootClear();updProgBack();
  {const bd=$('boards');if(bd){bd.style.opacity='';bd.title='';}}
@@ -9528,7 +9805,7 @@ async function refresh(){try{const r=await fetch('/api/dashboard',fetchTO(15000)
  const hrs=Math.floor(d.elapsed/3600),mins=Math.floor(d.elapsed%3600/60);
  const bestTxt=d.best_share_fmt||fmtShareDisp(d.best_share);
  const hp=hrParts(d.ghs);
- window._lastDash=d;{const nh=(d.boards||[]).filter(b=>b.alive&&b.ghs>0).length;if(nh>0)window._nHash=nh;}fanLockUI(d);$('ov').innerHTML=(d.fan_lock?'<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ Mining is locked after a fan problem (the miner is on Idle). <a href="#" onclick="window._flDismiss=false;fanLockUI(window._lastDash);return false">Details and unlock</a></div>':'')+(d.warn?'<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ '+hesc(d.warn)+'</div>':'')+(window._updDone||'')+overTempHTML(d)+chainHTML(d)+unexpHTML(d)+liveTiles(d);
+ window._lastDash=d;{const nh=(d.boards||[]).filter(b=>b.alive&&b.ghs>0).length;if(nh>0)window._nHash=nh;}fanLockUI(d);$('ov').innerHTML=(d.fan_lock?'<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ Mining is locked after a fan problem (the miner is on Idle). <a href="#" onclick="window._flDismiss=false;fanLockUI(window._lastDash);return false">Details and unlock</a></div>':'')+(d.warn?'<div style="grid-column:1/-1;color:var(--bad);font-size:13px;line-height:1.5;margin-bottom:4px">⚠ '+hesc(d.warn)+'</div>':'')+(window._updDone||'')+cfgStoreHTML(d)+overTempHTML(d)+chainHTML(d)+unexpHTML(d)+liveTiles(d);
  const bc=$('boards');bc.innerHTML='';let alive=0;
  // boards that aren't fitted (the miner found no board on that connector, and it isn't hashing): hidden
  // unless "show" is chosen (remembered in this browser)
@@ -9609,10 +9886,10 @@ async function loadControl(){if(featBlock('ctrlbody',F().ClockControl,'Clock and
 function renderControl(j){const c=j.current,oc=!!j.overclock;
  const L=(oc&&j.hardlimits)?j.hardlimits:j.limits;
  const safe=j.limits||L;
- const nb=(id,lab,unit,min,max,step,val,smin,smax)=>'<div class="ctrl"><label>'+lab+'</label>'+
+ const nb=(id,lab,unit,min,max,step,val,smin,smax,grid)=>'<div class="ctrl"><label>'+lab+'</label>'+
    '<div class="cstep">'+
      '<button type="button" tabindex="-1" onclick="cstep(\''+id+'\',-'+step+')">−</button>'+
-     '<input type="number" id="'+id+'" min="'+min+'" max="'+max+'" step="'+step+'" value="'+val+'" '+
+     '<input type="number" id="'+id+'" min="'+min+'" max="'+max+'" step="'+step+'"'+(grid?' data-grid="'+grid+'"':'')+' value="'+val+'" '+
        'onchange="cclamp(this);ctrlWarn()" oninput="ctrlWarn()" onfocus="this.select()">'+
      '<button type="button" tabindex="-1" onclick="cstep(\''+id+'\','+step+')">+</button>'+
      '<span class="u">'+unit+'</span>'+
@@ -9626,8 +9903,8 @@ function renderControl(j){const c=j.current,oc=!!j.overclock;
    p+='</div>';}
  const lk=j.in_charge||'';
  // unlock bar: open the disclaimer, or (when unlocked) a red banner + re-lock
- // (a model with the unlock or the probe not commissioned: no unlock bar / only the probe — C6/C7)
- const ub=featOff2(F().OverclockUnlock)
+ // (a model with the unlock or the probe not commissioned: no unlock bar / only the probe — C6/C7; the Box II: b2OCBar)
+ const ub=B2T()?b2OCBar(j,oc,safe):featOff2(F().OverclockUnlock)
    ?(featOff2(F().CeilingProbe)?'':'<div class="row" style="margin:2px 0 10px"><button class="ocbtn" onclick="ocProbe()">📐 Probe the clock ceiling…</button><span class="muted" style="font-size:11.5px;align-self:center">steps the clock past '+safe.freq[1]+' MHz while mining at the stock voltage, stops on heat, HW errors or a chip dropout, then goes back to the stock plan</span></div><div id="ceilbox"></div>')
    :(oc&&isOtherModel())
    ?'<div class="ocbar"><span>🔓 <b>Clock limit unlocked.</b> '+(L.freq[1]>safe.freq[1]?'You can set the clock past '+safe.freq[1]+' MHz, up to '+L.freq[1]+' MHz, at the stock voltage — permanent damage is possible and unsupported.':'No overclock ceiling has been decided for this model yet, so the clock still stays at '+safe.freq[1]+' MHz or below.')+(j.at?' Accepted '+hesc(j.at)+'.':'')+'</span><button onclick="ocProbe()">Probe the clock ceiling</button><button onclick="ocRelock()">Re-lock</button></div><div id="ceilbox"></div>'
@@ -9636,7 +9913,7 @@ function renderControl(j){const c=j.current,oc=!!j.overclock;
    :'<div class="row" style="margin:2px 0 10px"><button class="ocbtn" onclick="ocUnlock()">🔓 Unlock clock limit…</button><span class="muted" style="font-size:11.5px;align-self:center">'+(isOtherModel()?'raise the max clock past the safe window ('+safe.freq[1]+' MHz)':'raise the max clock past the safe window (the voltage range is the supply’s own: PV 9100–9600)')+'</span></div>';
  $('ctrlbody').innerHTML=(lk?lockBar(lk):j.busy?'<div class="lockbar">🔒 <b>Locked</b> — '+hesc(j.busy)+' is running: it owns the clock until it ends.</div>':'')+p+ub
    +'<div class="muted" style="font-size:11.5px;margin:2px 2px 8px">Type a value or use − / + to step. Nothing changes on the miner until you press <b>Apply</b>.</div>'
-   +nb('c_freq','Frequency','MHz',L.freq[0],L.freq[1],25,c.freq_mhz,safe.freq[0],safe.freq[1])
+   +nb('c_freq','Frequency','MHz',L.freq[0],L.freq[1],(CTRL&&CTRL.box2?1:25),c.freq_mhz,safe.freq[0],safe.freq[1],(CTRL&&CTRL.box2?12.5:0))
    +(B2T()?b2VoltCtl(j,nb):(nb('c_pv','Board voltage (PV)','mV',L.pv[0],L.pv[1],10,c.pv_mv,safe.pv[0],safe.pv[1])
    +nb('c_vrun','Run voltage','mV',L.vrun[0],L.vrun[1],10,c.vrun_mv,safe.vrun[0],safe.vrun[1])
    +'<label class="muted" style="display:flex;gap:7px;align-items:center;font-size:11.5px;margin:2px 2px 6px"><input type="checkbox" id="c_follow" style="width:auto;margin:0" onchange="ctrlWarn()"'+((c.pv_mv-c.vrun_mv===300)?' checked':'')+'>Keep run voltage at PV − 300 (the stock gap). Only PV changes the boards\' voltage: run voltage is replaced by PV a few seconds after it\'s set (measured: same voltage and watts whatever it is).</label>'
@@ -9647,7 +9924,19 @@ function renderControl(j){const c=j.current,oc=!!j.overclock;
  if(lk||j.busy)document.querySelectorAll('#ctrlbody input,#ctrlbody select,#ctrlbody button:not(.takemanual)').forEach(e=>e.disabled=true);
  $('ctrlnote').textContent=lk?('locked — '+chargeTxt(lk)):((j.idle?'idle (boards off) · ':'')+(j.manual?'manual':b2SelTxt(j))+(j.idle?'':(j.current&&j.current.freq_mhz?' · '+j.current.freq_mhz+' MHz · '+(B2T()?boxVoltsTxt(j.current.vrun_mv):'PV '+j.current.pv_mv+' mV (run '+j.current.vrun_mv+' mV)'):(j.raw&&!B2T()?' · '+j.raw:''))));
  ctrlWarn();
- if(oc)ocProbeRefresh();}
+ if(oc||(B2T()&&!featOff2(F().CeilingProbe)))ocProbeRefresh();}
+// b2OCBar: the Box II’s clock ceiling probe (C6) and overclock unlock (C7), the same in both builds, each behind
+// its own confirmation. The unlock opens only up to this unit's saved clean probe result (never above 750 MHz):
+// no result, or a probe that failed at its first step, keeps the clock at the stock window's top.
+function b2OCBar(j,oc,safe){const b=j.box2||{},pr=b.probe,top=safe.freq[1],lim=b.oc_limit||top,why=b.unlock_err||'';
+ const probeOn=!featOff2(F().CeilingProbe),ulOn=!featOff2(F().OverclockUnlock);
+ if(!probeOn&&!ulOn)return '';
+ const res=pr?('<div class="muted" style="font-size:11.5px;margin:0 2px 8px">This unit’s probe'+(pr.at?(' ('+hesc(new Date(pr.at).toLocaleString())+')'):'')+': '+(pr.cap>top?('clean up to <b>'+pr.cap+' MHz</b>'+(pr.fail_at?(', '+pr.fail_at+' MHz failed ('+hesc(pr.why||'')+')'):'')):('<b>no headroom</b>: '+pr.fail_at+' MHz failed ('+hesc(pr.why||'')+'), so it stays at '+top+' MHz'))+(pr.volts?(' at '+hesc(pr.volts)):'')+'.</div>'):'';
+ if(oc&&ulOn)return '<div class="ocbar"><span>🔓 <b>Clock limit unlocked.</b> '+(lim>top?('You can set the clock past '+top+' MHz, up to '+lim+' MHz (what this unit’s probe held clean), at the stock voltage — permanent damage is possible and unsupported.'):('This unit has no clean probe result above '+top+' MHz, so the clock still stays at '+top+' MHz or below.'))+(j.at?' Accepted '+hesc(j.at)+'.':'')+'</span>'+(probeOn?'<button onclick="ocProbe()">Probe the clock ceiling</button>':'')+'<button onclick="ocRelock()">Re-lock</button></div>'+res+'<div id="ceilbox"></div>';
+ return '<div class="row" style="margin:2px 0 6px">'+(probeOn?'<button class="ocbtn" onclick="ocProbe()">📐 Probe the clock ceiling…</button>':'')
+  +(ulOn?'<button class="ocbtn" id="b2ulbtn" onclick="ocUnlock()"'+(why?' disabled title="'+hesc(why)+'"':'')+'>🔓 Unlock clock limit…</button>':'')+'</div>'
+  +'<div class="muted" style="font-size:11.5px;margin:0 2px 8px">'+(probeOn?('The probe steps the clock past '+top+' MHz, up to '+(b.oc_hard_max||750)+' MHz, while mining at the stock voltage, stops on heat, HW errors, a chip dropout or the power limit, then goes back to Stock High. '):'')
+  +(ulOn?(why?('<b>No unlock yet:</b> '+hesc(why)+'.'):('The clock limit can be unlocked up to '+lim+' MHz, what this unit’s probe held clean.')):'')+'</div>'+res+'<div id="ceilbox"></div>';}
 // Box II (planBox2V): no PV and no millivolts. The only voltage setting is the OEM's voltage LEVEL (42–61: a
 // higher level is a lower voltage), shown in volts next to it (boxVoltsTxt). With voltage control off (test C4
 // not commissioned) the level follows the clock: the level of the stock plan at that clock or faster (the
@@ -9675,9 +9964,11 @@ function ctrlWarn(){const w=$('ctrlwarn');if(!w)return;
    if(f.checked&&g('c_pv')>0){vr.value=Math.max(+vr.min,Math.min(+vr.max,g('c_pv')-300));}}}
  {const vl=$('c_vlvl');if(vl&&!b2VC()){const r=b2RuleLevel(g('c_freq'));if(r)vl.value=String(r);vl.disabled=true;}}
  const ce=$('ctrlest'),pw=(window._lastDash||{}).power||{};
- const ew=(pw.watts&&pw.mhz===g('c_freq')&&pw.pv===g('c_pv'))?pw.watts:estW(g('c_freq'),g('c_pv')); // the running setting: the Dashboard's figure
+ const b2e=B2T()?b2EstW(pw,g('c_freq'),b2VC()?Math.round(g('c_vlvl')):(b2RuleLevel(g('c_freq'))||b2TopLevel())):null;
+ const ew=B2T()?(b2e&&b2e.w):(pw.watts&&pw.mhz===g('c_freq')&&pw.pv===g('c_pv'))?pw.watts:estW(g('c_freq'),g('c_pv')); // the running setting: the Dashboard's figure
+ const cal=B2T()?!!(b2e&&b2e.cal):!!window._powF;
  {const fq=g('c_freq'),run=Math.floor(fq/12.5)*12.5;window._runsNote=(fq>0&&run!==fq)?(' · the chips run '+run+' MHz (12.5 MHz steps)'):'';}
- if(ce)ce.innerHTML=ew?('At this setting'+(window._runsNote||'')+': <b>'+(window._powF?'':'≈ ')+Math.round(ew)+' W</b> · '+(ew/(window._powMains||100)).toFixed(1)+' A at '+Math.round(window._powMains||100)+' V'+(window._powF?' (calibrated)':' (estimate)')):'';
+ if(ce)ce.innerHTML=ew?('At this setting'+(window._runsNote||'')+': <b>'+(cal?'':'≈ ')+Math.round(ew)+' W</b> · '+(ew/(window._powMains||100)).toFixed(1)+' A at '+Math.round(window._powMains||100)+' V'+(B2T()?(cal?' (your wall meter)':' (estimate measured on one unit)'):(cal?' (calibrated)':' (estimate)'))):'';
  const s=(CTRL&&CTRL.limits);if(!s){w.innerHTML='';return;}
  const over=[];
  if(g('c_freq')>s.freq[1])over.push('clock '+g('c_freq')+' MHz');
@@ -9687,6 +9978,10 @@ function ctrlWarn(){const w=$('ctrlwarn');if(!w)return;
   +(g('c_pv')>0&&g('c_pv')<9100?'<div class="note" style="margin:10px 0 0">PV '+g('c_pv')+' is below what the supply delivers: the boards will run at about 9.1 V (as at PV 9100), with the same power.</div>':'');}
 function cstep(id,d){const el=document.getElementById(id);if(!el||el.disabled)return;
  const st=+el.step||1,mn=+el.min,mx=+el.max;let v=Math.round(((+el.value||mn)+d)/st)*st;
+ // a clock on the chips' 12.5 MHz grid (data-grid 12.5, the Box II): − and + go to the next clock the chips really run (floor(MHz/12.5)×12.5),
+ // as the whole MHz that lands on it: 690 (runs 687.5) → 700 → 713 (712.5) → 725 → 738 (737.5) → 750; down 675, 663, 650 …
+ const g=+(el.dataset&&el.dataset.grid)||0;
+ if(g>0){const k=Math.floor((+el.value||mn)/g+1e-9)+(d>0?1:-1);v=Math.ceil(k*g-1e-9);}
  v=Math.max(mn,Math.min(mx,v));el.value=v;ctrlWarn();}
 function cclamp(el){if(el.value==='')return;let v=+el.value;const mn=+el.min,mx=+el.max;
  if(isNaN(v)){el.value=mn;return;}if(v<mn)el.value=mn;else if(v>mx)el.value=mx;}
@@ -9719,7 +10014,8 @@ async function applyControl(){['c_freq','c_pv','c_vrun','c_vlvl'].forEach(id=>{c
  const {j}=await jpost('/api/control',p);
  if(j.ok){$('ctrlnote').textContent='applied: '+j.applied;setTimeout(loadControl,2000);}else{toast(/^Not applied/.test(j.err||'')?j.err:('apply failed: '+(j.err||'')),true);if(j.locked||/strong-chip test is running/.test(j.err||''))loadControl();}} // show who holds it
 // ---- overclock unlock ----
-function ocUnlock(){$('ocbox').innerHTML=ocDiscHTML();show('ocmodal',true);
+function ocUnlock(){const why=B2T()&&CTRL&&CTRL.box2&&CTRL.box2.unlock_err;if(why){toast('No unlock yet: '+why,true);return;}
+ $('ocbox').innerHTML=ocDiscHTML();show('ocmodal',true);
  const cb=$('oc_agree'),bt=$('oc_accept');if(cb&&bt){cb.checked=false;bt.disabled=true;cb.onchange=()=>bt.disabled=!cb.checked;}}
 function ocClose(){show('ocmodal',false);}
 async function ocAccept(){const cb=$('oc_agree');if(!cb||!cb.checked)return;
@@ -9728,7 +10024,7 @@ async function ocAccept(){const cb=$('oc_agree');if(!cb||!cb.checked)return;
 async function ocRelock(){if(!confirm('Re-lock to the safe window?\n\nThe clock/voltage boxes go back to the conservative range. Anything already applied stays until you change it.'))return;
  const {j}=await jpost('/api/overclock',{revoke:true});
  if(j&&j.ok){loadControl();}else toast('could not re-lock: '+((j&&j.err)||''),true);}
-function ocDiscHTML(){return ''
+function ocDiscHTML(){if(B2T())return b2OCDiscHTML();return ''
  +'<h3>Unlock clock &amp; voltage limits</h3>'
  +'<p>'+(B2T()?('By default this tool refuses any clock outside a conservative window'+(CTRL&&CTRL.limits&&CTRL.limits.freq?' ('+CTRL.limits.freq[0]+'–'+CTRL.limits.freq[1]+' MHz)':'')+' that is unlikely to harm the hardware, and any voltage that isn’t one of the listed steps. Unlocking raises the clock cap so you can push the miner further.'):'By default this tool clamps clock and voltage to a conservative range that is unlikely to harm the hardware. Unlocking raises those caps so you can push the miner further.')+' Read this first.</p>'
  +'<h4>What unlocking does</h4>'
@@ -9743,11 +10039,30 @@ function ocDiscHTML(){return ''
  +'<p>This firmware and tool are provided <b>“as is”, without warranty of any kind</b>, express or implied. The author(s) and distributor(s) accept <b>no responsibility or liability</b> for any damage, loss, injury, downtime or cost of any kind arising from using this unlock or any value you apply with it. <b>You use this feature entirely at your own risk and are solely responsible for your hardware.</b></p>'
  +'<label class="occheck"><input type="checkbox" id="oc_agree"> I have read and understand the above, accept all risk, and release the author(s) from any liability.</label>'
  +'<div class="mrow"><button onclick="ocClose()">Cancel</button><button class="danger" id="oc_accept" onclick="ocAccept()" disabled>Unlock limits</button></div>';}
+// b2OCDiscHTML: the Box II’s unlock dialog: the clock only (the voltage stays the stock 7.67 V above 690 MHz),
+// up to this unit's probe result, and what overclocking measured on the first unit.
+function b2OCDiscHTML(){const b=(CTRL&&CTRL.box2)||{},pr=b.probe||{},top=(CTRL&&CTRL.limits&&CTRL.limits.freq)?CTRL.limits.freq[1]:690,lim=b.oc_limit||top;
+ return '<h3>Unlock the clock limit</h3>'
+ +'<p>By default this tool refuses any clock above '+top+' MHz (the OEM’s Stock High). Unlocking lets you set the clock up to <b>'+lim+' MHz</b>: what this unit’s own clock ceiling probe held clean'+(pr.volts?(' at '+hesc(pr.volts)):'')+'. It never goes above '+(b.oc_hard_max||750)+' MHz, and above '+top+' MHz the voltage stays the stock '+(pr.volts?hesc(pr.volts):'one')+'. Read this first.</p>'
+ +'<h4>What was measured</h4>'
+ +'<p>On the first unit: 700 MHz gave about 2 % more hashrate for 2 % more power; above that, errors rose and efficiency got worse. Overclocking never improves efficiency; lowering clock/voltage does.</p>'
+ +'<h4>What unlocking does</h4>'
+ +'<ul><li>Raises the maximum clock you can set, up to '+lim+' MHz on this unit. A probe step is held only a few minutes: run any clock above '+top+' MHz for hours before you keep it.</li>'
+ +'<li>Fan limits and the heat guards are unchanged. The firmware\'s own thermal cutoff still applies, but must not be relied on as protection.</li></ul>'
+ +'<h4>Risks you accept</h4>'
+ +'<ul><li>Running past the stock clock can cause <b>overheating, instability, reduced lifespan, or permanent, irreversible damage</b> to the miner and attached hardware.</li>'
+ +'<li>It may <b>void any warranty</b> and could create a fire or electrical hazard if cooling or power delivery is inadequate.</li>'
+ +'<li>Results vary by unit; a setting that is stable on one board may destroy another.</li></ul>'
+ +'<h4>No warranty, no liability</h4>'
+ +'<p>This firmware and tool are provided <b>“as is”, without warranty of any kind</b>, express or implied. The author(s) and distributor(s) accept <b>no responsibility or liability</b> for any damage, loss, injury, downtime or cost of any kind arising from using this unlock or any value you apply with it. <b>You use this feature entirely at your own risk and are solely responsible for your hardware.</b></p>'
+ +'<label class="occheck"><input type="checkbox" id="oc_agree"> I have read and understand the above, accept all risk, and release the author(s) from any liability.</label>'
+ +'<div class="mrow"><button onclick="ocClose()">Cancel</button><button class="danger" id="oc_accept" onclick="ocAccept()" disabled>Unlock up to '+lim+' MHz</button></div>';}
 // ---- firmware-ceiling probe (clamp detection) ----
 let _ceilTimer=null;
 async function ocProbe(){
  if(isOtherModel()){ // held steps while mining (ceilingbox2.go): the confirm is this run's risk acceptance
-  if(!confirm('Probe the clock ceiling?\n\nThis runs the clock PAST the stock window, 10 MHz at a time, at the stock voltage, holding each step for a few minutes while mining. It stops at the first step that gets too hot (82 °C), makes too many hardware errors or loses a chip, and always goes back to the stock Hashrate plan at the end.\n\n⚠ Running past the stock clock can PERMANENTLY DAMAGE the miner. Stay with it, and Stop it if anything looks wrong. Controls and fans are locked during the probe.'))return;
+  const hm=(CTRL&&CTRL.box2&&CTRL.box2.oc_hard_max)||750;
+  if(!confirm('Probe the clock ceiling?\n\nThis runs the clock PAST the stock window, one 12.5 MHz chip step at a time (700, 712.5, 725, 737.5, '+hm+' MHz), at the stock voltage, holding each step for a few minutes while mining. It stops at the first step that gets too hot ('+((CTRL&&CTRL.box2&&CTRL.box2.probe_abort_c)||82)+' °C), makes more than 1 % hardware errors (or 3× the board’s own starting rate, whichever is higher; fewer than '+((CTRL&&CTRL.box2&&CTRL.box2.probe_min_errs)||10)+' new errors are ignored), loses a chip or a board, or would draw more than 460 W at the wall (estimated), and always goes back to Stock High at the end. The result is saved for this unit: the clock limit can then be unlocked up to the highest clean step, never above '+hm+' MHz.\n\nOn the first unit: 700 MHz gave about 2 % more hashrate for 2 % more power; above that, errors rose and efficiency got worse. Overclocking never improves efficiency; lowering clock/voltage does.\n\n⚠ Running past the stock clock can PERMANENTLY DAMAGE the miner. Stay with it, and Stop it if anything looks wrong. Controls and fans are locked during the probe.'))return;
   const {j}=await jpost('/api/ceiling',{start:true,accept_risk:true});
   if(!j.ok){toast(j.err||'could not start',true);return;}
   window._ceilLogOpen=undefined;ocProbePoll();return;}
@@ -9756,11 +10071,11 @@ async function ocProbe(){
  if(!j.ok){toast(j.err||'could not start',true);return;}
  window._ceilLogOpen=undefined; // fresh run: default the log open while it streams
  ocProbePoll();}
-async function ocStopProbe(){await jpost('/api/ceiling',{stop:true});}
+async function ocStopProbe(){const {j}=await jpost('/api/ceiling',{stop:true});if(!j||!j.ok)toast('Couldn’t stop the probe: '+((j&&(j.err||j.error))||'no answer')+'. Try again; the probe also stops by itself at its limits.',true);ocProbeRefresh();}
 function ocProbePoll(){ocProbeRefresh();}
 async function ocProbeRefresh(){try{const r=await fetch('/api/ceiling');const j=await r.json();if(j.ok){renderCeiling(j.state);
   if(j.state&&j.state.running&&!_ceilTimer){_ceilTimer=setInterval(ocProbeRefresh,2000);}
-  if(j.state&&!j.state.running&&_ceilTimer){clearInterval(_ceilTimer);_ceilTimer=null;}}}catch(e){}}
+  if(j.state&&!j.state.running&&_ceilTimer){clearInterval(_ceilTimer);_ceilTimer=null;if(B2T())loadControl();}}}catch(e){}} // (Box II: the unlock follows the saved result)
 function renderCeiling(s){const el=$('ceilbox');if(!el)return;if(!s||(!s.running&&!s.done&&!(s.axes&&s.axes.length))){return;}
  window._ceil=s;
  const held=(s.axes||[]).some(a=>a.held);
@@ -10047,8 +10362,8 @@ function renderTunerForm(d){
     :'<b>Voltage is PV</b>, the voltage the hash boards really get: a multimeter on the supply follows it to within about 10 mV, and it drives power and heat. The supply only delivers <b>PV 9100–9600</b> (measured: lower settings stay at about 9.1 V, higher ones are ignored), so that’s the range to map. The run voltage (mV) on its own changes nothing on the boards; the tuner sends it along as PV − 300, as the stock plan does. The tuner also stops lowering the voltage when the boards’ own reading stops falling.','','','About the voltage steps')
    +chk('t_topdown',d.top_down,'Old walk: start at the baseline voltage, go up until clean, then down until it fails (slower: every step down is a full test)')
    +hint('Off: each clock only gets voltage added until it’s clean, never lowered: a quicker, rougher curve.')
-   +'<div class="topt-row">'+chk('t_chiptrim',d.chip_trim,'Trim weak chips instead of raising the whole board')+'<label class="tinline">up to <input type="number" id="t_ctmax" min="1" max="10" step="1" value="'+(d.chip_trim_max||3)+'"> chips per board, each slowed as far as <select id="t_ctdeep">'+[25,37.5,50,62.5,75].map(x=>'<option value="'+x+'"'+(x===(d.chip_trim_deep||50)?' selected':'')+'>−'+x+' MHz</option>').join('')+'</select></label></div>'
-   +hint('Needs <b>Controls → Chip trims</b> switched on. When a test fails because <b>one chip</b> went over its limit, that chip is slowed 12.5 MHz at a time (as far as the depth you pick here: −25 to −75 MHz, −50 by default) and the same setting is tested again, instead of adding voltage for all '+(isOtherModel()?((MODEL()||{}).chips_per_board||46):46)+' chips. A trim <b>stays only if the test then passes</b>; otherwise it’s undone and the curve goes on as usual. At the end, a <b>trim check</b> at the best setting lifts each trim a step at a time while that setting stays clean, so trims a slower clock needed, or that were made after a test failed by bad luck, don’t stay (one test per step). Each trimmed chip costs about '+(isOtherModel()?tTrimCost(st):'0.04')+' % of the board’s hashrate per 12.5 MHz. Trims the run keeps are listed at the end and stay in Controls → Chip trims, where you can change or reset them. Off by default.','','','How trimming works')
+   +'<div class="topt-row">'+chk('t_chiptrim',d.chip_trim,'Trim weak chips instead of raising the whole board')+'<label class="tinline">up to <input type="number" id="t_ctmax" min="1" max="'+(B2T()?4:10)+'" step="1" value="'+(d.chip_trim_max||3)+'"> chips per board, each slowed as far as <select id="t_ctdeep">'+[25,37.5,50,62.5,75].map(x=>'<option value="'+x+'"'+(x===(d.chip_trim_deep||50)?' selected':'')+'>−'+x+' MHz</option>').join('')+'</select></label></div>'
+   +hint('Needs <b>Controls → Chip trims</b> switched on. When a test fails because <b>one chip</b> went over its limit, that chip is slowed 12.5 MHz at a time (as far as the depth you pick here: −25 to −75 MHz, −50 by default) and the same setting is tested again, instead of adding voltage for all '+(isOtherModel()?((MODEL()||{}).chips_per_board||46):46)+' chips. A trim <b>stays only if the test then passes</b>; otherwise it’s undone and the curve goes on as usual.'+(B2T()?' On this miner a test that fails on the board’s total is handled the same way when one chip made a third or more of those errors.':'')+' At the end, a <b>trim check</b> at the best setting lifts each trim a step at a time while that setting stays clean, so trims a slower clock needed, or that were made after a test failed by bad luck, don’t stay (one test per step). Each trimmed chip costs about '+(isOtherModel()?tTrimCost(st):'0.04')+' % of the board’s hashrate per 12.5 MHz. Trims the run keeps are listed at the end and stay in Controls → Chip trims, where you can change or reset them. Off by default.','','','How trimming works')
    +'<div class="topt-row">'+chk('t_confirmwin',d.confirm_win,'Confirm the winner with one more, longer test')+'<label class="tinline">for <input type="number" id="t_confirmmin" step="5" value="'+Math.round((d.confirm_x||2)*(d.hold_min||25))+'" oninput="updateEstimate()"> min</label></div>'
    +hint('Runs the best setting once more at the end, by default for twice the test length, so the winner has the most time behind it.'),'search-only','t_sec3')
   +sec(6,'Test length and safety','All options','',
@@ -10058,13 +10373,13 @@ function renderTunerForm(d){
    +hint('A weak or damaged chip makes far more errors than the rest no matter the clock or voltage. Judged like the others, its random ups and downs fail good settings and push the voltage up for every chip. With this on, a chip at least '+(d.weak_x||8)+' times noisier than the typical chip during the baseline only fails a step when it gets clearly worse ('+(d.weak_factor||1.5)+' times its own normal rate). The board totals are judged on the normal chips.','','','Why go easier on noisy chips'))
   +sec(7,'Fans during the run','All options','',
    '<div class="mode-cards">'
-   +mc('t_fan','hold',fansel,'Hold a steady temperature (recommended)','The tuner takes over this miner’s fans and keeps the board sensor (or the hottest chip) at your target, so every setting is judged at the same temperature. It records how much fan each setting needs; that’s what the preset fan curves are built from. The auto fan waits until the run ends.')
+   +mc('t_fan','hold',fansel,'Hold a steady temperature (recommended)','The tuner takes over this miner’s fans and keeps the miner’s temperature (its hottest reading) at your target, so every setting is judged at the same temperature. It records how much fan each setting needs; that’s what the preset fan curves are built from. The auto fan waits until the run ends.')
    +mc('t_fan','leave',fansel,'Leave the fans alone','Your auto fan curve (or the miner’s own control) keeps running and the tuner only changes the clock and voltage. Temperatures can drift between tests, and presets get no fan curve of their own.')
-   +'</div><div class="tform-grid hold-only" id="t_fanwrap" style="margin-top:.7rem">'+f('t_fantarget','Target temperature °C',d.fan_target_c,1)+f('t_fanmin','Lowest fan %',d.fan_min_pct,5)
-   +'<label>Hold on<select id="t_holdon" onchange="updateEstimate()"><option value="board"'+(d.hold_on!=='chip'?' selected':'')+'>the board sensor (recommended)</option><option value="chip"'+(d.hold_on==='chip'?' selected':'')+'>hottest chip</option></select></label></div>')
+   +'</div><div class="tform-grid hold-only" id="t_fanwrap" style="margin-top:.7rem">'+(B2T()?f('t_fantarget','Target temperature °C (at most '+((d._box2&&d._box2.hold_max_c)||74)+')',d.fan_target_c,1).replace('type="number"','type="number" max="'+((d._box2&&d._box2.hold_max_c)||74)+'"'):f('t_fantarget','Target temperature °C',d.fan_target_c,1))+f('t_fanmin','Lowest fan %',d.fan_min_pct,5)
+   +'<label>Hold on<select id="t_holdon" disabled><option value="chip" selected>'+(B2T()?'the Dashboard’s Temperature (the chips’ reading, the hottest board)':'the Dashboard’s Temperature (the hottest reading)')+'</option></select></label></div>')
   +sec(8,'Presets','Search only','search',
    chk('t_buildpresets',d.build_presets,'Build and test presets at the end')
-   +hint('After the search, four presets are made for this miner and each is tested on its own: <b>High</b> (the best clock), <b>Lowest power</b> (the <i>Lowest MHz</i> from section 4), and <b>Middle</b> and <b>Low</b> spread evenly between them. Each uses the lowest clean voltage the curve measured at its clock. They appear on the <a href="#" onclick="showTab(\'presets\');return false">Presets</a> tab, where one click puts a preset and its fan curve on the miner.','','','How the presets are built')
+   +hint('After the search, four presets are made for this miner and each is tested on its own: <b>High</b> (the best clock), <b>Lowest power</b> (the <i>Lowest MHz</i> from section 4), and <b>Middle</b> and <b>Low</b> spread evenly between them. Each uses the lowest clean voltage the curve measured at its clock. They appear on the <a href="#" onclick="showTab(\'presets\');return false">Presets</a> tab, where one click puts a preset and its fan curve on the miner.'+(B2T()?' On this miner building presets needs <b>Hold a steady temperature</b> (section Fans): each preset’s fan curve is made from the fan speed that held its temperature, up to '+((d._box2&&d._box2.hold_max_c)||74)+' °C. Chip trims the run keeps aren’t part of a preset: they stay in Controls → Chip trims and apply to every clock.':''),'','','How the presets are built')
    +'<div class="tform-grid presets-only" id="t_presetwrap">'+f('t_presetmin','Minutes per preset',d.preset_min,1)+f('t_warmest','Warmest preset °C',d.warmest_c,1,'hold-only')+'</div>'
    +hint('','t_presettemps','presets-only hold-only'),'search-only','t_sec7')
   +sec(8,'Presets to build','Rebuild only','presets',
@@ -10084,9 +10399,9 @@ function tunerWizUI(){const m=modeVal(),hold=fanVal()==='hold';
  const bp=$('t_buildpresets');vis('.presets-only',m==='rebuild'||(bp&&bp.checked));
  if($('t_cpv')){$('t_cpv').textContent=B2T()?boxVoltsTxt(+($('t_cmv')||{}).value||0):(((+($('t_cmv')||{}).value||0)-300)+' mV');}
  // renumber the visible sections 1..n, like the app
- let n=0;document.querySelectorAll('#tunerbody .tsec').forEach(sc=>{if(!sc.classList.contains('hide')){n++;const k=sc.querySelector('.tnum');if(k)k.textContent=n;}});
+ let n=0;document.querySelectorAll('#tunerbody .tsec').forEach(sc=>{if(!sc.classList.contains('hide')&&sc.style.display!=='none'){n++;const k=sc.querySelector('.tnum');if(k)k.textContent=n;}});
  const pt=$('t_presettemps');if(pt){const lo=+(($('t_fantarget')||{}).value||70),hi=+(($('t_warmest')||{}).value||75);
-  pt.textContent=hold?('Each preset is held at its own temperature while it’s tested, spread from your target ('+lo+' °C) up to the warmest ('+hi+' °C): High '+lo+' · Middle '+Math.round(lo+(hi-lo)/3)+' · Low '+Math.round(lo+2*(hi-lo)/3)+' · Lowest power '+hi+' °C, and always at least 12 °C below the abort.'):'';}
+  pt.textContent=hold?('Each preset is held at its own temperature while it’s tested, spread from your target ('+lo+' °C) up to the warmest ('+hi+' °C): High '+lo+' · Middle '+Math.round(lo+(hi-lo)/3)+' · Low '+Math.round(lo+2*(hi-lo)/3)+' · Lowest power '+hi+' °C, and always at least '+(B2T()?8:12)+' °C below the abort.'):'';}
  updateEstimate();}
 function tunerCfg(){const n=id=>+(($(id)||{}).value||0);const b=id=>!!(($(id)||{}).checked);const m=modeVal();
  const hold=n('t_hold')||25,cm=n('t_confirmmin');
@@ -10101,8 +10416,15 @@ function tunerCfg(){const n=id=>+(($(id)||{}).value||0);const b=id=>!!(($(id)||{
   fan_hold:fanVal()==='hold',fan_target_c:n('t_fantarget'),fan_min_pct:n('t_fanmin'),hold_on:(($('t_holdon')||{}).value||'board'),
   build_presets:(m==='rebuild')||b('t_buildpresets'),
   preset_min:m==='rebuild'?n('t_presetmin2'):n('t_presetmin'),warmest_c:m==='rebuild'?n('t_warmest2'):n('t_warmest')});}
+// tClockN: how many clocks a map run tests. A box2v-plan model (B2T) counts the run's own list (Go tunerConfig.clockList: a Lowest
+// MHz off the step grid is itself the first clock, never two tests on one chip clock); the SC Lite as before.
+function tClockN(c){const L=c.lowest_mhz,H=c.highest_mhz,s=c.step;if(!B2T())return Math.max(1,Math.floor((H-L)/Math.max(1,s))+1);
+ if(!(s>0)||!(H>=L))return 1;const pl=x=>Math.floor(x/12.5)*12.5,out=[];let k=Math.floor(L/s+1e-9);
+ if(Math.abs(k*s-L)>1e-9){out.push(L);k++;}
+ for(;k*s<=H+1e-9;k++){const m=Math.ceil(k*s-1e-9);if(out.length&&pl(m)<=pl(out[out.length-1]))continue;out.push(m);}
+ if(out.length&&pl(H)>pl(out[out.length-1]))out.push(H);return Math.max(1,out.length);}
 function estHours(c){let tests=0;
- if(c.mode==='map'){const clocks=Math.max(1,Math.floor((c.highest_mhz-c.lowest_mhz)/Math.max(1,c.step))+1);const vsteps=Math.max(1,Math.floor((c.max_mv-c.min_mv)/Math.max(1,c.mv_step))+1);tests=c.top_down?clocks*Math.min(vsteps,4):clocks*(1+Math.min(vsteps-1,1.5)*(c.settle_min+5)/Math.max(1,c.hold_min+c.settle_min));} // bottom-up: one full pass per clock, plus short fails on the way up
+ if(c.mode==='map'){const clocks=tClockN(c);const vsteps=Math.max(1,Math.floor((c.max_mv-c.min_mv)/Math.max(1,c.mv_step))+1);tests=c.top_down?clocks*Math.min(vsteps,4):clocks*(1+Math.min(vsteps-1,1.5)*(c.settle_min+5)/Math.max(1,c.hold_min+c.settle_min));} // bottom-up: one full pass per clock, plus short fails on the way up
  else if(c.mode==='confirm')tests=Math.max(1,Math.ceil((c.confirm_hours||4)*60/Math.max(1,c.hold_min)));
  const presets=c.build_presets?4:0;
  const conf=(c.mode==='map'&&c.confirm_win)?(c.hold_min*(c.confirm_x||2)+c.settle_min):0;
@@ -10111,7 +10433,7 @@ function estHours(c){let tests=0;
 function updateEstimate(){try{const h=estHours(tunerCfg());$('t_est').textContent='roughly '+(h<1?Math.round(h*60)+' min':((h*0.55).toFixed(1)+'–'+h.toFixed(1)+' h'))+' (failed steps end early)';}catch(e){}}
 function tunerReview(){const c=tunerCfg(),b2=B2T(),pv=mv=>mv+c.pv_gap,vt=mv=>b2?boxVoltsTxt(mv):('PV '+pv(mv)); // Box II: the V-code in volts, no PV
  const base=c.baseline_src==='own'?(c.baseline_mhz+' MHz · '+vt(c.baseline_mv)):(c.baseline_src==='current'?'what it runs now':'stock'+(TUNERDEF._stock?(' ('+TUNERDEF._stock.mhz+' MHz · '+(b2?boxVoltsTxt(TUNERDEF._stock.mv):'PV '+TUNERDEF._stock.pv)+')'):''));
- const kv=[['Miner',isOtherModel()?'this '+hesc(modelName()):'this SC Lite'],['Option',{map:'Map every clock and voltage',confirm:'Confirm one setting for hours',rebuild:'Rebuild the presets from the last search'}[c.mode]],['Baseline',base+' · '+c.baseline_min+' min'],['Fans',c.fan_hold?('hold '+c.fan_target_c+' °C on the '+(c.hold_on==='chip'?'hottest chip':'board sensor')+' · never below '+c.fan_min_pct+' %'):'left alone'],['Safety','stops at '+c.abort_c+' °C'+(c.dry_run?' · <b>dry run: writes nothing</b>':'')]];
+ const kv=[['Miner',isOtherModel()?'this '+hesc(modelName()):'this SC Lite'],['Option',{map:'Map every clock and voltage',confirm:'Confirm one setting for hours',rebuild:'Rebuild the presets from the last search'}[c.mode]],['Baseline',base+' · '+c.baseline_min+' min'],['Fans',c.fan_hold?('hold '+c.fan_target_c+' °C on the '+'Dashboard’s Temperature'+' · never below '+c.fan_min_pct+' %'):'left alone'],['Safety','stops at '+c.abort_c+' °C'+(c.dry_run?' · <b>dry run: writes nothing</b>':'')]];
  const steps=[];
  if(c.mode!=='rebuild')steps.push('<b>Baseline</b>: runs '+base+' for '+c.baseline_min+' min and learns every chip’s normal error rate. Nothing can fail here.');
  if(c.mode==='map'){steps.push('<b>Map</b> '+c.lowest_mhz+'–'+c.highest_mhz+' MHz in '+c.step+' MHz steps. At each clock: the lowest clean voltage between '+(b2?(boxVoltsTxt(c.max_mv)+' and '+boxVoltsTxt(c.min_mv)+' (steps of '+b2StepTxt(c.mv_step)+')'):('PV '+pv(c.min_mv)+' and PV '+pv(c.max_mv)+' ('+c.mv_step+' mV steps)'))+(c.top_down?(c.find_lowest?', from the baseline voltage up then down':', only raised'):', from the bottom up')+'. Each test: '+c.settle_min+' min to settle, then '+c.hold_min+' min watched at sensitivity '+c.sigma+'.');
@@ -10136,7 +10458,7 @@ async function startTuner(){const c=tunerCfg();window._tcfg=c;
  if(j.ok){$('tunernote').textContent=j.note||'started';$('t_reviewbox').innerHTML='';setTimeout(pollTunerOnce,800);if(window._tv)clearInterval(window._tv);window._tv=setInterval(pollTunerOnce,5000);}
  else toast('could not start: '+(j.err||''),true);}
 async function stopTuner(){if(!confirm('Stop the tuning run?\n\nThe miner goes back to what it ran before the run: its clock, voltage and fans, and any chip trims the run made come off again.'))return;
- const {j}=await jpost('/api/tuner',{action:'stop'});if(j.ok)$('tunernote').textContent=j.note||'stopping';}
+ const {j}=await jpost('/api/tuner',{action:'stop'});if(j.ok)$('tunernote').textContent=j.note||'stopping';else toast(j.err||'failed',true);}
 async function pollTunerOnce(){try{const r=await fetch('/api/tuner');const j=await r.json();if(j.ok){updateTunerFiles(j);updateTunerStatus(j.status);}}catch(e){}}
 function planTxt(m,mv,pv){return B2T()?(m+' MHz · '+boxVoltsTxt(+mv||0)):(m+' MHz · PV '+(pv||((+mv||0)+300)));}
 function chipLbl(b,i){return 'board '+b+' chip '+i;}
@@ -10152,7 +10474,7 @@ function planParamsHtml(s){const c=s.cfg||window._tcfg||{},md=s.mode||c.mode,row
  if(md==='confirm'&&c.confirm_mhz)rows.push(['Confirm',c.confirm_mhz+' MHz · PV '+(c.confirm_mv+(c.pv_gap||300))+' for '+(c.confirm_hours||4)+' h']);}
  if(c.pv_gap&&!B2T())rows.push(['mV','sent along as PV − '+c.pv_gap+' (stock gap; only PV moves the boards’ voltage)']);
  if(c.hold_min)rows.push(['Tests',c.hold_min+' min each · sensitivity '+c.sigma+(c.easy_noisy?' · easier on noisy chips':'')]);
- if(c.fan_hold!=null)rows.push(['Fans',c.fan_hold?('hold '+c.fan_target_c+' °C on the '+(c.hold_on==='chip'?'hottest chip':'board sensor')+' · never below '+c.fan_min_pct+'%'):'left alone']);
+ if(c.fan_hold!=null)rows.push(['Fans',c.fan_hold?('hold '+c.fan_target_c+' °C on the '+'Dashboard’s Temperature'+' · never below '+c.fan_min_pct+'%'):'left alone']);
  if(c.build_presets!=null&&md!=='confirm')rows.push(['Presets',c.build_presets?(c.preset_min+' min each · up to '+c.warmest_c+' °C'):'off']);
  if(c.abort_c)rows.push(['Safety','stops at '+c.abort_c+' °C'+(s.dry_run?' · dry run':'')]);
  if(s.started)rows.push(['Started',s.started]);
@@ -10175,13 +10497,23 @@ function planStepsHtml(steps){return steps.map((ph,pi)=>{const st=ph.state||'tod
 function setPlanSteps(steps){const el=$('planSteps');const h=planStepsHtml(steps);if(el._h===h)return;
  const open=[...el.querySelectorAll('details[open]')].map(d=>d.dataset.k);el.innerHTML=h;el._h=h;
  open.forEach(k=>{const d=el.querySelector('details[data-k="'+k+'"]');if(d)d.open=true;});}
-function tChipMap(chips){const byB={};chips.forEach(c=>{(byB[c.b]=byB[c.b]||[]).push(c);});let h='';
+function tChipMap(chips){const byB={};window._tmapChips={};chips.forEach(c=>{(byB[c.b]=byB[c.b]||[]).push(c);window._tmapChips[c.b+','+c.i]=c;});let h='';wireTmapTip();
  Object.keys(byB).sort((a,b)=>a-b).forEach(b=>{const list=byB[b].slice().sort((x,y)=>x.i-y.i),tot=list.reduce((a,c)=>a+c.gained,0),over=list.filter(c=>c.limit>0&&c.gained>c.limit).length;
   h+='<div class="board-row"><div class="board-label">Board '+b+'<span class="muted">+'+tot+' errors'+(over?(' · '+over+' over'):'')+'</span></div><div class="tcells" style="--cols:'+list.length+';--half:'+Math.ceil(list.length/2)+'">';
   list.forEach(c=>{const r=c.limit>0?c.gained/c.limit:0,ov=c.limit>0&&c.gained>c.limit,bin=c.gained<=0?-1:Math.min(5,Math.max(0,Math.ceil(r*6)-1));
-   h+='<div class="tcell'+(ov?' over':(bin>=3?' strong':''))+'" style="'+(!ov&&bin>=0?'background:var(--ramp-'+bin+')':'')+'" title="'+chipLbl(c.b,c.i)+': +'+c.gained+' new error'+(c.gained===1?'':'s')+(c.limit>0?(' of a limit of '+c.limit.toFixed(1)+' ('+Math.round(c.pct)+'%)'):'')+(ov?' · over the limit: this step fails':'')+'">'+(ov?'✕':'')+'</div>';});
+   h+='<div class="tcell'+(ov?' over':(bin>=3?' strong':''))+(c.trim?' trim':'')+'" style="'+(!ov&&bin>=0?'background:var(--ramp-'+bin+')':'')+'" data-k="'+c.b+','+c.i+'">'+(ov?'✕':c.trim?(c.trim<0?'▾':'▴'):'')+'</div>';});
   h+='</div></div>';});return h;}
-function tMapLegend(){return '<span><span class="sw" style="background:var(--cell-empty);box-shadow:inset 0 0 0 1px var(--cell-edge)"></span>no new errors</span>'
+// the Tuner's chip map hover: the Dashboard's box (cellTip), a heading line, bold numbers, a coloured verdict
+function tmapTipHtml(k){const c=(window._tmapChips||{})[k];if(!c)return'';
+ let s=hesc(chipLbl(c.b,c.i))+'<br><b>+'+c.gained+'</b> new error'+(c.gained===1?'':'s')+' in this test';
+ if(c.limit>0)s+='<br>limit <b>'+c.limit.toFixed(1)+'</b> · '+Math.round(c.pct)+'% of it used';
+ if(c.trim)s+='<br>'+(c.trim<0?'▾':'▴')+' slowed <b>'+(c.trim>0?'+':'−')+Math.abs(c.trim)+' MHz</b> (chip trim)';
+ const ov=c.limit>0&&c.gained>c.limit;
+ if(ov)s+='<br><span style="color:var(--bad)">✕ over its limit: this step fails</span>';
+ else if(c.limit>0)s+='<br><span style="color:var(--ok)">✓ within its limit</span>';
+ return s;}
+function wireTmapTip(){if(window._tmaptipwired)return;const host=$('tmap');if(!host)return;window._tmaptipwired=true;cellTip(host,'.tcell',tmapTipHtml);}
+function tMapLegend(trims){return (trims?'<span><span class="sw" style="background:var(--cell-empty);box-shadow:inset 0 0 0 2px var(--pair);color:var(--pair);text-align:center;font-size:9px;line-height:13px">▾</span>slowed by a chip trim</span>':'')+'<span><span class="sw" style="background:var(--cell-empty);box-shadow:inset 0 0 0 1px var(--cell-edge)"></span>no new errors</span>'
  +'<span>few<span class="ramp">'+[0,1,2,3,4,5].map(i=>'<span class="sw" style="background:var(--ramp-'+i+')"></span>').join('')+'</span>at its limit</span>'
  +'<span><span class="sw" style="background:var(--over);color:#fff;text-align:center;font-size:9px;line-height:13px">✕</span>over its limit (fails the test)</span>';}
 // tcfTxt/tcfWord: a chips_for/chips_last record as text, and its result as [pill text, pill class]
@@ -10400,11 +10732,11 @@ function powerTile(d,ghsNow,mk){const p=d.power||{};window._powF=p.factor||0;win
  const ths=(ghsNow||d.ghs)/1000,jth=ths>0.01?Math.round(p.watts/ths):null;
  return mk('Power',(p.calibrated?'':'≈ ')+Math.round(p.watts)+' <span class="muted" style="font-size:12px">W</span>',
   (jth?('<b style="color:var(--text)">'+jth+' J/TH</b> · '):'')+f1(p.amps)+' A at '+Math.round(p.mains_v)+' V · '+(p.calibrated?'calibrated':'<a class="sublink" href="#" onclick="gotoPower();return false" title="Calibrate with a wall meter in Settings → Power &amp; calibration">estimate</a>'));}
-// Box II: the setting's wall-meter reading, or the OEM's figure for an uncalibrated stock mode, or none
+// Box II: the setting's wall-meter reading, or the estimate measured on one unit, or none
 function powerTileBox2(p,d,ghsNow,mk){if(!p.watts)return mk('Power','—',hesc(p.reason||'shown while hashing'));
  const ths=(ghsNow||d.ghs)/1000,jth=ths>0.01?Math.round(p.watts/ths):null;
  return mk('Power',(p.calibrated?'':'≈ ')+Math.round(p.watts)+' <span class="muted" style="font-size:12px">W</span>',
-  (jth?('<b style="color:var(--text)">'+jth+' J/TH</b> · '):'')+f1(p.amps)+' A at '+Math.round(p.mains_v)+' V · '+(p.calibrated?'wall meter':'<a class="sublink" href="#" onclick="gotoPower();return false" title="The OEM’s published figure for this mode (±5 %). Calibrate with a wall meter in Settings → Power &amp; calibration">OEM spec</a>')+(p.low_hash?' · <span style="color:var(--warn)" title="'+hesc(p.low_hash_note||'')+'">low hashrate</span>':''));}
+  (jth?('<b style="color:var(--text)">'+jth+' J/TH</b> · '):'')+f1(p.amps)+' A at '+Math.round(p.mains_v)+' V · '+(p.calibrated?'wall meter':'<a class="sublink" href="#" onclick="gotoPower();return false" title="Estimated from wall-meter readings on one unit: yours may differ by a few %. Calibrate with a wall meter in Settings → Power &amp; calibration">estimate</a>')+(p.low_hash?' · <span style="color:var(--warn)" title="'+hesc(p.low_hash_note||'')+'">low hashrate</span>':''));}
 // the 24-hour hashrate graph: a fixed window ending now, y from 0, the hour on the clock along the bottom
 // per-board health from the mining log (boardhealth.go): hottest chip, chips at start-up, re-inits, dropped results
 function bhLines(d,b){const h=(d.board_health||[]).find(x=>x.id===b.id);if(!h)return '';let o='';
@@ -10569,22 +10901,27 @@ function renderPresets(){const ps=PR.presets||[],lk=PR.in_charge||'',tuning=lk==
  $('p_tuning').innerHTML=tuning?'A tuning run is going on this miner and it is holding the fans. Presets can be applied when it ends; new ones it builds appear here then. <a href="#" onclick="showTab(\'tuner\');return false">Open the tuner</a>':'';
  const bySlot={};ps.forEach(p=>{const sl=pSlotOf(p.name);if(sl&&!bySlot[sl])bySlot[sl]=p;});
  const others=ps.filter(p=>{const sl=pSlotOf(p.name);return !sl||bySlot[sl]!==p;});
- const card=p=>{const on=pIsOn(p),w=estW(p.mhz,p.pv),ths=pTHS(p),run=Math.floor(p.mhz/12.5)*12.5;
+ const card=p=>{const on=pIsOn(p),bw=B2T()?((PR.est||{})[p.name]||null):null,w=B2T()?(bw&&bw.w):estW(p.mhz,p.pv),ths=pTHS(p),run=Math.floor(p.mhz/12.5)*12.5;
+  const bcal=!!(bw&&/^this unit/.test(bw.src||'')); // (box2v: this unit's own wall-meter reading there: no ≈)
   // Box II's stock modes are the OEM's plans (Stock High is the factory setting: the Stock card folded in); the
   // public release has no tuner, so no tested / not-tested tag on a preset someone set
   const tested=b2Stock(p.name)?(b2Name(p.name)==='Stock High'?'The OEM’s factory setting for this miner, read from its firmware. Use it to start mining again after Idle, or to go back to the factory clock and voltage.':'The OEM’s low-power stock plan, read from the miner’s firmware.')
-   :p.tested&&PUB()&&featOff2(F().Tuner)?'' // a tuner-built preset left on the config partition: no tuner here, no test tags
+   :p.tested&&pubNoTunerP()?'' // a tuner-built preset left on the config partition: no tuner here, no test tags
    :p.tested?('Clean'+(p.target_c?(' at '+p.target_c+' °C'):'')+(ths?(' · ≈ '+ths.toFixed(2)+' TH/s'):'')+'<br>tested '+hesc(p.tested)):PUB()?'Set by hand':'<span style="color:var(--warn)">Set by hand, not tested</span>';
   return '<div class="pcard'+(on?' active':'')+'"><h3>'+hesc(b2Name(p.name))+(on?' <span class="pill ok">on the miner</span>':'')+'</h3>'
    +'<div class="clock">'+p.mhz+' MHz</div>'
    +'<div class="sub">'+vLine(p.mv,p.pv)+(run!==p.mhz?(' · runs '+run+' MHz'):'')+'</div>'
-   +(w?'<div class="meta" title="Estimate: chips follow clock × PV² (PV is the real board voltage), calibrated to 899 W at 625 MHz · PV 9400.">≈ '+Math.round(w)+' W'+(ths>0.05?(' · '+Math.round(w/ths)+' J/TH'):'')+'</div>':'')
+   +(w?'<div class="meta" title="'+(B2T()?(bcal?'Your wall-meter reading at this setting.':'Estimate from wall-meter readings on one unit (a unit may differ by about 5 %). Enter your own meter’s reading in Settings → Power &amp; calibration.'):'Estimate: chips follow clock × PV² (PV is the real board voltage), calibrated to 899 W at 625 MHz · PV 9400.')+'">'+(bcal?'':'≈ ')+Math.round(w)+' W'+(ths>0.05?(' · '+Math.round(w/ths)+' J/TH'):'')+'</div>':'')
    +'<div class="meta">'+hesc(pFanLine(p))+'</div>'+pSpark(p)
    +'<div class="meta">'+tested+'</div>'
    +'<div class="acts"><button class="primary" onclick="presetApply(\''+esc1(p.name)+'\')"'+(tuning?' disabled':'')+'>'+(on?'Apply again':'Apply')+'</button>'+(b2Stock(p.name)?'':'<button onclick="presetEdit(\''+esc1(p.name)+'\')">Edit</button>')+'</div></div>';};
  // the tuner's four slots: an empty one points at the tuner, which the public release hasn't got on Box II
- let h=(PUB()&&featOff2(F().Tuner)?PSLOTS.filter(([k])=>bySlot[k]):PSLOTS).map(([k,lbl])=>bySlot[k]?card(bySlot[k]):('<div class="pcard empty"><h3>'+lbl+'</h3><div class="meta">Not built yet. Run a search on the Tuner tab with <i>Build presets</i> ticked, or set it by hand.</div><div class="acts"><button onclick="showTab(\'tuner\')">Tuner</button><button onclick="presetNewNamed(\''+esc1(lbl)+'\')">Set by hand</button></div></div>')).join('');
+ let h=(pubNoTunerP()?PSLOTS.filter(([k])=>bySlot[k]):PSLOTS).map(([k,lbl])=>bySlot[k]?card(bySlot[k]):('<div class="pcard empty"><h3>'+lbl+'</h3><div class="meta">Not built yet. Run a search on the Tuner tab with <i>Build presets</i> ticked, or set it by hand.</div><div class="acts"><button onclick="showTab(\'tuner\')">Tuner</button><button onclick="presetNewNamed(\''+esc1(lbl)+'\')">Set by hand</button></div></div>')).join('');
  h+=others.map(card).join('');
+ // (box2v) presets saved earlier that the clock window doesn't take now: they can't run or be scheduled; delete them
+ (PR.outside||[]).forEach(p=>{h+='<div class="pcard"><h3>'+hesc(p.name)+'</h3><div class="clock">'+p.mhz+' MHz</div><div class="sub">'+vLine(p.mv,0)+'</div>'
+   +'<div class="meta" style="color:var(--warn)">Outside the current clock window: it can’t be applied or scheduled ('+hesc(p.why||'')+').</div>'
+   +'<div class="acts"><button onclick="presetDeleteOut(\''+esc1(p.name)+'\')">Delete</button></div></div>';});
  if(PR.stock&&!B2T()){const st=PR.stock,on=lk==='stock settings',w=estW(st.mhz,st.pv),srun=Math.floor(st.mhz/12.5)*12.5;
   h+='<div class="pcard'+(on?' active':'')+'"><h3>Stock'+(on?' <span class="pill ok">on the miner</span>':'')+'</h3><div class="clock">'+st.mhz+' MHz</div>'
    +'<div class="sub">'+vLine(st.mv,st.pv)+(srun!==st.mhz?(' · runs '+srun+' MHz'):'')+'</div>'+(w?'<div class="meta">≈ '+Math.round(w)+' W</div>':'')
@@ -10641,6 +10978,8 @@ async function presetFormSave(){const name=$('pfLabel').value.trim(),mhz=+$('pfM
  if(j.ok){presetFormCancel();toast((pfKey?'Saved ':'Made ')+name);loadPresets();}else $('pfErr').textContent=j.err||'save failed';}
 async function presetDeleteCur(){if(!pfKey||!confirm('Delete the preset "'+pfKey+'"?'))return;
  const {j}=await jpost('/api/presets',{action:'delete',name:pfKey});if(j.ok){presetFormCancel();toast('Preset deleted');loadPresets();}else toast(j.err||'failed',true);}
+async function presetDeleteOut(name){if(!confirm('Delete the preset "'+name+'"?'))return;
+ const {j}=await jpost('/api/presets',{action:'delete',name});if(j.ok){toast('Preset deleted');loadPresets();}else toast(j.err||'failed',true);}
 async function presetCool(name,j){
  if(!j.cooling)return false;const nm=b2Name(name);
  if(confirm('The thermal guard put this miner on Idle to cool down. It can start again in '+j.left+'.\n\nOn Idle the boards stop making heat and cool by themselves. Starting early would bring the heat straight back, and the panel can’t raise the fans without waking the miner.\n\nStart '+nm+' by itself when the cool-down ends?')){
@@ -10652,10 +10991,18 @@ async function presetApply(name){const p=(window._presets||[]).find(x=>x.name===
  if(!confirm('Put '+nm+' on this miner?\n\n'+p.mhz+' MHz · '+vLine(p.mv,p.pv)+'\n'+pFanLine(p)+(p.fan_profile!=='none'?' (auto fan on)':'')+(p.tested||b2Stock(p.name)?'':PUB()?'\n\nThis preset was set by hand.':'\n\nThis preset was set by hand and hasn’t been tested.')))return;
  if(PR&&PR.in_charge==='idle mode')toast('Waking the miner from Idle, then applying '+nm+' (about 20 s)…');
  const {j}=await jpost('/api/presets',{action:'apply',name});
- if(j.ok){toast(nm+' is on the miner');setTimeout(()=>{loadPresets();loadControl();loadFan();},1200);}else if(!(await presetCool(p.name,j)))toast(j.err||'failed',true);}
+ if(j.ok){toast(nm+' is on the miner');presetsUntil(p.mhz,p.mv);}else if(!(await presetCool(p.name,j)))toast(j.err||'failed',true);}
+// presetsUntil: the list again until the miner runs mhz / mv (v0.5.6: on one model a change takes 30–40 s to
+// settle, and the list read 1 s after Apply still showed the old setting, so the applied preset wasn't marked "on the
+// miner" until it was pressed again). Every 4 s, for at most a minute; Controls and the fans with the last read.
+async function presetsUntil(mhz,mv){const t0=Date.now();
+ const on=()=>{const c=(PR&&PR.current)||{};return c.mhz===mhz&&(mv==null||c.mv===mv);};
+ await new Promise(r=>setTimeout(r,1200));
+ for(;;){await loadPresets();if(on()||Date.now()-t0>60000)break;await new Promise(r=>setTimeout(r,4000));}
+ loadControl();loadFan();}
 async function presetStock(){const st=PR.stock||{};if(!confirm('Put the stock settings on this miner?\n\n'+st.mhz+' MHz · '+vLine(st.mv,st.pv)+' ('+oemPoss()+' factory setting)'+(PR.in_charge==='idle mode'?'\n\nIt starts mining again.':'')))return;
  const {j}=await jpost('/api/presets',{action:'apply',name:'Stock'});
- if(j.ok){toast('Stock settings are on the miner');setTimeout(()=>{loadPresets();loadControl();loadFan();},1200);}else if(!(await presetCool('Stock',j)))toast(j.err||'failed',true);}
+ if(j.ok){toast('Stock settings are on the miner');presetsUntil(st.mhz,st.mv);}else if(!(await presetCool('Stock',j)))toast(j.err||'failed',true);}
 async function presetIdle(){if(!confirm('Put this miner in Idle?\n\nIt stops hashing until you pick another preset (or its schedule does).'))return;
  const {j}=await jpost('/api/presets',{action:'idle'});if(j.ok){toast('The miner is idle');setTimeout(()=>{loadPresets();loadControl();},1200);}else toast(j.err||'failed',true);}
 async function presetBuild(){if(!confirm('Build High / Middle / Low / Lowest power from the last clock-curve tuner run?\n\nThey replace presets with the same names.'))return;
@@ -10890,7 +11237,7 @@ async function loadPoolGuard(){try{const g=await (await fetch('/api/poolguard'))
  if(g.hold)h+='<div class="warnbar" style="margin-top:8px">⛔ <b>Mining is held on Idle by the pool guard</b> since '+hesc(new Date(g.hold.at*1000).toLocaleString())+': a pool that isn’t in this list kept coming back ('+hesc(g.hold.what||'')+'). Presets, Stock and the schedule won’t start mining until you resume. Check the pool list (and anything else that can change the miner’s pools), then <button onclick="poolGuardResume()">Resume</button></div>';
  (g.incidents||[]).slice(-3).reverse().forEach(i=>{h+='<div style="color:var(--warn)">'+hesc(new Date(i.t*1000).toLocaleString())+': '+hesc(i.action)+' '+hesc(i.pool)+' (account '+hesc(i.user||'-')+')'+(i.err?' · '+hesc(i.err):'')+'</div>';});
  el.innerHTML=h;}catch(e){}}
-async function poolGuardResume(){if(!confirm('Resume? The hold is lifted; apply '+(B2T()?'Stock High':'Stock')+' or a preset to start mining again.'))return;try{await jpost('/api/poolguard',{resume:true});}catch(e){}loadPoolGuard();}
+async function poolGuardResume(){if(!confirm('Resume? The hold is lifted; apply '+(B2T()?'Stock High':'Stock')+' or a preset to start mining again.'))return;try{const {j}=await jpost('/api/poolguard',{resume:true});if(!j.ok)toast(j.err||'failed',true);}catch(e){}loadPoolGuard();}
 async function loadPools(){loadPoolGuard();try{const r=await fetch('/api/pools');if(r.status===401){boot();return;}const j=await r.json();
  if(!j.ok){$('poolbody').innerHTML=busyHTML(j.err,j.detail);$('poolnote').textContent='';retryLater(loadPools);return;}
  renderPools(j.pools||[],j.configured,j.idle);}catch(e){$('poolbody').innerHTML=busyHTML(OFFLINE);retryLater(loadPools);}}
@@ -10959,6 +11306,15 @@ function calNote(){if(featOff2(F().PowerEstimate))return ''; // no SC Lite power
  if(window._powF)return '';
  return '<div class="note" style="margin:8px 0;font-size:12px">Watts and J/TH here are estimates from typical SC Lite figures. For your unit’s real numbers, calibrate with a plug-in wall meter in <a href="#" onclick="gotoPower();return false">Settings → Power &amp; calibration</a>.</div>';}
 function gotoPower(){showTab('settings');setTimeout(()=>{const e=$('powerbody');if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},600);}
+// b2EstW: the Box II's watts for a setting, from the Dashboard's power view (power_box2.go): your wall-meter reading
+// there (cal), else that unit's reading at its own settings, else the curve k × the chips' clock × V² (525–750 MHz).
+function b2EstW(pw,mhz,l){if(featOff2(F().PowerEstimate)||!pw||!pw.available||!mhz||!l)return null;
+ const k=(pw.cals||[]).find(c=>c.mhz===mhz&&c.v===l);if(k)return {w:k.watts,cal:true};
+ const pt=(pw.points||[]).find(c=>c.mhz===mhz&&c.v===l);if(pt)return {w:pt.watts,cal:false};
+ const r=pw.est_range||[525,750],lv=b2Levels();if(!pw.k||mhz<r[0]||mhz>r[1]||l<lv[0]||l>lv[1])return null;
+ const m=BOX_V_MEAS[l],v=(m!=null)?m:(7.66-0.0335*(l-42));return {w:pw.k*Math.floor(mhz/12.5)*12.5*v*v,cal:false};}
+// b2TopLevel: the fastest stock plan's level (the one a clock above it keeps)
+function b2TopLevel(){let f=0,v=0;((CTRL&&CTRL.presets)||[]).forEach(ps=>{const pl=ps.plan||{};if(pl.freq_mhz>f){f=pl.freq_mhz;v=pl.vrun_mv;}});return v;}
 function estW(mhz,pv){if(featOff2(F().PowerEstimate))return null; // the clock×PV² model is SC Lite's; off until this model is measured
  if(isOtherModel())return null; // Box II: watts only per measured setting (power_box2.go), never this model
  if(!mhz||!pv)return null;pv=Math.max(pv,9100); // the supply doesn't go below ~9.1 V (PV 9100, measured)
@@ -10987,13 +11343,15 @@ function tunerResultsTable(rows,baseMin){
 // tunerResultsBox2: the finished-tests table on Box II: the V-code in volts, no mV / PV columns and no watts or
 // J/TH (this model's watts come only from wall-meter readings per stock setting: Settings → Power)
 function tunerResultsBox2(rows,bm,word){
- let h='<div class="ctwrap" style="max-height:420px;border:none"><table class="ctable restable"><thead><tr><th>Time</th><th class="num">MHz</th><th>Voltage</th><th>Result</th><th class="num">TH/s</th><th class="num">Max °C</th><th class="num">err/min</th><th>Reason</th></tr></thead><tbody>';
+ const pw=rows.some(r=>r.est_w>0); // (the power estimate: commissioned, with each test's chip trims in it)
+ let h='<div class="ctwrap" style="max-height:420px;border:none"><table class="ctable restable"><thead><tr><th>Time</th><th class="num">MHz</th><th>Voltage</th><th>Result</th><th class="num">TH/s</th>'+(pw?'<th class="num" title="Estimate from wall-meter readings on one unit, with the chips slowed in that test">≈ W</th><th class="num">J/TH</th>':'')+'<th class="num">Max °C</th><th class="num">err/min</th><th>Reason</th></tr></thead><tbody>';
  for(let i=rows.length-1;i>=0;i--){const r=rows[i],res=r.result||'',pass=res==='clean'||res==='confirmed';
   const cls=pass?'res-pass':res==='stopped'?'res-base':'res-fail';
   const em=(r.min_s>0)?(r.err_add/r.min_s):null,hot=(em!=null)&&(bm>0?em>bm*1.5+0.05:em>0.2);
-  h+='<tr data-n="'+i+'" class="'+(String(i)===window._tmapSel?'picked':'')+'" style="cursor:pointer" title="Show this test on the chip map" onclick="tmapPick('+i+',true)"><td class="mono">'+hesc(r.time||'')+'</td><td class="num">'+r.mhz+'</td><td>'+boxVoltsTxt(r.mv)+'</td>'
+  h+='<tr data-n="'+i+'" class="'+(String(i)===window._tmapSel?'picked':'')+'" style="cursor:pointer" title="Show this test on the chip map" onclick="tmapPick('+i+',true)"><td class="mono">'+hesc(r.time||'')+'</td><td class="num">'+r.mhz+'</td><td>'+boxVoltsTxt(r.mv)+(r.trims?('<span class="muted" title="chips the run had slowed in this test: '+(+r.trim_mhz||0)+' MHz in all"> · '+r.trims+' chip'+(r.trims===1?'':'s')+' slowed</span>'):'')+'</td>'
    +'<td class="'+cls+'">'+hesc(word[res]||res.toUpperCase())+'</td>'
    +'<td class="num">'+(r.ths?r.ths.toFixed(2):'—')+'</td>'
+   +(pw?('<td class="num">'+(r.est_w>0?Math.round(r.est_w):'—')+'</td><td class="num">'+(r.est_w>0&&r.ths>0.05?Math.round(r.est_w/r.ths):'—')+'</td>'):'')
    +'<td class="num">'+(r.max_t?r.max_t.toFixed(1):'—')+'</td>'
    +'<td class="num"'+(hot?' style="color:var(--bad);font-weight:600"':'')+'>'+(em!=null?em.toFixed(2):'—')+'</td>'
    +'<td>'+hesc(r.reason||'')+'</td></tr>';}
@@ -11041,7 +11399,7 @@ async function tmapRender(){const mp=$('tmapPanel'),s=TMAP.status,v=window._tmap
   if(cur&&cur.settling){$('tmap').innerHTML='';$('tmapCap').textContent='Live: '+planTxt(cur.mhz,cur.mv,cur.pv)+' is settling; the map fills in once counting begins.';return;}
   if(!s||!s.chips||!s.chips.length||s.phase==='baseline'||!s.chips.some(c=>c.limit>0)){$('tmap').innerHTML='';
    $('tmapCap').textContent=s&&s.phase==='baseline'?'Live: the baseline only learns each chip’s normal error rate; the map shows the tests that follow.':'Live: waiting for the first reading of this test…';return;}
-  $('tmap').innerHTML=tChipMap(s.chips);
+  $('tmap').innerHTML=tChipMap(s.chips);if(s.chips.some(c=>c.trim))$('tmapLeg').innerHTML=tMapLegend(true);
   $('tmapCap').textContent='Live: '+(cur?planTxt(cur.mhz,cur.mv,cur.pv)+', '+(cur.elapsed_min||0).toFixed(1)+' of '+(cur.hold_min||25)+' min watched. ':'')+'Each square is a chip; the stronger the shade, the closer it is to its own limit.';
   return;}
  const n=+v;let t=TMAP.cache[n];
@@ -11049,7 +11407,8 @@ async function tmapRender(){const mp=$('tmapPanel'),s=TMAP.status,v=window._tmap
  if(window._tmapSel!==v)return;
  if(!t){$('tmap').innerHTML='';$('tmapCap').textContent='No chip data saved for that test.';return;}
  const chips=(t.chips||[]).map(c=>({b:c[0],i:c[1],gained:c[2],limit:c[3],pct:c[3]?c[2]/c[3]*100:0,base:c[4]}));
- $('tmap').innerHTML=tChipMap(chips);
+ const trm={};(t.trims||[]).forEach(x=>{trm[x[0]+'.'+x[1]]=x[2];});chips.forEach(c=>{const v=trm[c.b+'.'+c.i];if(v)c.trim=v;}); // (box2v: chips slowed in that test)
+ $('tmap').innerHTML=tChipMap(chips);if((t.trims||[]).length)$('tmapLeg').innerHTML=tMapLegend(true);
  const word={clean:'passed',failed:'failed',aborted:'stopped for safety',stopped:'stopped'};
  $('tmapCap').textContent='Test at '+(t.time||'')+': '+planTxt(t.mhz,t.mv,t.pv)+', '+(+t.min_s||0).toFixed(1)+' min watched, '+(word[t.result]||t.result)+(t.reason&&t.reason!=='clean'?(' ('+t.reason+')'):'')+'. Each square is a chip; the stronger the shade, the closer it got to its own limit.';}
 

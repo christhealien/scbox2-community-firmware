@@ -763,7 +763,7 @@ func box2SaveMarker(now time.Time) {
 }
 
 func box2RemoveMarker() {
-	os.Remove(box2SoftIdlePath())
+	cfgRemove(box2SoftIdlePath())
 	os.Remove(box2SoftIdlePath() + ".bak")
 }
 
@@ -835,13 +835,18 @@ func box2ReleaseLeftover(wait time.Duration) {
 
 // ---- the fall-back ----
 
+// box2FansMaxRunning: box2FansMaxPlan's writes in flight (the tests wait for them).
+var box2FansMaxRunning sync.WaitGroup
+
 // box2FansMaxPlan pushes both fans to 100 % through the running stock plan (the way minerd sets fans, the same
 // write the thermal guard's no-park path uses) — never a raw sysfs write, never fan2/fan3 (the Box II voltage
 // trim channels). On its own goroutine: callers may hold controlMu/planMu-adjacent locks, and the write takes
 // planMu. A plan write while the board is held off is refused by mutatePlanBox2 (box2SoftIdled), so this only
 // lands when the stop failed or was ignored.
 func box2FansMaxPlan() {
+	box2FansMaxRunning.Add(1)
 	go func() {
+		defer box2FansMaxRunning.Done()
 		if _, err := writeFansUnlessIdle(100); err != nil {
 			// (the system log, not the activity feed: the guard's own message there is the one the owner reads)
 			log.Printf("soft idle: forcing the fans to 100%% failed: %v", err)

@@ -711,7 +711,8 @@ func runInstallImage(file string) {
 		log.Printf("update: system image %s written and read back: rebooting", m.To)
 	case errors.Is(err, errImgNothingWritten):
 		log.Printf("update: %v", err)
-		imgExit(1) // the system is as it was: the boot script starts the panel again
+		imgClearClean() // no reboot follows: the handoff's "clean reboot" note must not excuse a later real restart
+		imgExit(1)      // the system is as it was: the boot script starts the panel again
 		return
 	default:
 		log.Printf("update: %v: rebooting", err)
@@ -723,6 +724,10 @@ func runInstallImage(file string) {
 }
 
 var errImgNothingWritten = errors.New("nothing was written")
+
+// imgClearClean: the "clean reboot" note (markCleanReboot) off again, the removal saved too: the install stopped
+// before it rebooted (a variable: tests).
+var imgClearClean = func() { cfgRemove(recCleanPath()) }
 
 // installImage: check again, then write. err wraps errImgNothingWritten when the disk wasn't touched.
 func installImage(file string, req imgRequest) (*imgMarker, error) {
@@ -776,7 +781,7 @@ func installImage(file string, req imgRequest) (*imgMarker, error) {
 	log.Printf("update: writing the %d-byte system image to %s", len(img), imgDevPath)
 	res, err := writeSystemImage(imgDevPath, img, imgPartBytes)
 	if err != nil {
-		os.Remove(imgPendingPath()) // nothing to confirm after the reboot: last.json says what happened
+		cfgRemove(imgPendingPath()) // nothing to confirm after the reboot: last.json says what happened
 		writeLast("failed", from, req.Version, err.Error())
 		return nil, err
 	}
@@ -794,7 +799,7 @@ func imgConfirmAfterBoot() {
 	}
 	var mk imgMarker
 	if json.Unmarshal(b, &mk) != nil || mk.SysLen <= 0 {
-		os.Remove(imgPendingPath())
+		cfgRemove(imgPendingPath())
 		return
 	}
 	go func() {
@@ -811,7 +816,7 @@ func imgConfirmAfterBoot() {
 		if err != nil {
 			res, note = "installed", "started; the system partition couldn't be read back ("+err.Error()+")"
 		}
-		os.Remove(imgPendingPath())
+		cfgRemove(imgPendingPath())
 		writeLast(res, mk.From, mk.To, note)
 		activity.emit("⬆ firmware image " + map[bool]string{true: mk.To, false: "update"}[mk.To != ""] + ": " + note)
 	}()
@@ -1192,6 +1197,7 @@ func handleImageAction(w http.ResponseWriter, r *http.Request, in imgIn) {
 		imgMarkClean() // the hashrate and events kept in RAM go to the config partition now
 		if err := imgHandoff(imgStage); err != nil {
 			os.Remove(imgReqPath)
+			imgClearClean() // no reboot follows (imgMarkClean's note would hide a later unexpected restart)
 			refuse(err.Error())
 			return
 		}
@@ -1199,7 +1205,7 @@ func handleImageAction(w http.ResponseWriter, r *http.Request, in imgIn) {
 		activity.emit("⬆ writing firmware image " + label + " to the system partition: the miner reboots when it's done")
 		recordMark("RB", "firmware image "+label)
 		markReboot(4*time.Minute, imgHardReboot, "Writing firmware "+label+": the miner reboots when it's done (keep the power on).")
-		writeJSON(w, map[string]any{"ok": true, "note": "writing " + label + ": the miner reboots when it's done (a few minutes). Keep the power on."})
+		writeJSONHandoff(w, map[string]any{"ok": true, "note": "writing " + label + ": the miner reboots when it's done (a few minutes). Keep the power on."})
 		return
 	}
 	writeJSON(w, imgView())

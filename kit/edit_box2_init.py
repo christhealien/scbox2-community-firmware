@@ -157,23 +157,39 @@ HOSTNAME_RESTORE = (
     "        fi\n")
 
 
+# The settings partition (v0.5.2: /usr/libexec/scbox2/cfgmount, files/scbox2-cfgmount): checked by scbox2-fatfix while
+# unmounted (after a power cut the FAT can be dirty with lost clusters; it repairs only what is safe to repair, else it
+# changes nothing and writes /tmp/scbox2-cfg-repair for the panel), mounted READ-ONLY at /mnt/cfgflash, and copied to a
+# tmpfs at /mnt/config, which every program uses. Normal running then writes nothing to the flash (the OEM's backend
+# rewrites its settings file for every fan step); a setting that must survive a reboot is saved in a short write window
+# (remount read-write, write with a .bak, sync, remount read-only) by the program that made it. If the RAM copy can't
+# be made, the partition is mounted read-write at /mnt/config as before (/tmp/scbox2-cfg-direct); if it can't be
+# mounted at all, /mnt/config is an empty RAM folder and /tmp/scbox2-cfg-broken says so (S48 and the panel read it).
+STOCK_S38_MOUNT = (
+    "        mkdir -p /mnt/config\n"
+    "        mount -t vfat  /dev/spiblock2 /mnt/config\n"
+    "        mkdir -p /mnt/config/etc/network\n"
+    "        if [ ! -f \"/mnt/config/etc/network/interfaces\" ]; then\n"
+    "            cp /root/interfaces /mnt/config/etc/network/interfaces\n"
+    "        fi\n")
+
+
 def edit_s38initdir(t):
-    """Mount /mnt/config with umask=077,noatime,errors=remount-ro (the FAT holds panel secrets; 077 keeps a
-    stolen card's files owner-only, errors=remount-ro stops writes to a failing flash), and verify the mount
-    succeeded -- on failure raise /tmp/scbox2-cfg-broken (S48 reads it) and keep booting."""
+    """Replace the stock mount block (mount the FAT read-write at /mnt/config, copy the OEM's network file onto it on
+    a fresh partition) with /usr/libexec/scbox2/cfgmount (check, read-only mount, RAM copy, the same first-boot step
+    in RAM and saved), then the per-unit random seed (S20urandom runs before the mount) and the panel's hostname,
+    both before S40network brings eth0 up."""
     _assert_md5(t, "/etc/init.d/S38initdir")
     s = t.text("/etc/init.d/S38initdir")
-    old = "        mount -t vfat  /dev/spiblock2 /mnt/config\n"
-    new = ("        if mount -t vfat -o umask=077,noatime,errors=remount-ro /dev/spiblock2 /mnt/config; then\n"
-           "            rm -f /tmp/scbox2-cfg-broken\n"
-           "            # this miner's own random seed (kept here, not the image's shared /etc/random-seed):\n"
+    new = ("        # the settings partition: checked, mounted read-only at /mnt/cfgflash, used from a RAM copy at\n"
+           "        # /mnt/config (see /usr/libexec/scbox2/cfgmount)\n"
+           "        if /usr/libexec/scbox2/cfgmount; then\n"
+           "            # this miner's own random seed (kept there, not the image's shared /etc/random-seed):\n"
            "            # into the kernel's pool before anything makes a key (SSH, https, sessions), then renewed\n"
            "            [ -x /usr/libexec/scbox2/seed ] && /usr/libexec/scbox2/seed load\n"
-           "        else\n"
-           "            echo \"S38initdir: /mnt/config mount failed\" > /tmp/scbox2-cfg-broken\n"
            "        fi\n"
            + HOSTNAME_RESTORE)
-    s = _replace_once(s, old, new, "/etc/init.d/S38initdir mount")
+    s = _replace_once(s, STOCK_S38_MOUNT, new, "/etc/init.d/S38initdir mount block")
     t.put("/etc/init.d/S38initdir", s.encode(), 0o755)
     return s
 
@@ -184,7 +200,7 @@ S20URANDOM = """#! /bin/sh
 # urandom: the random seed (scbox2). Each miner keeps its own seed on the config partition
 # (/mnt/config/random-seed, see /usr/libexec/scbox2/seed): the read-only system image's /etc/random-seed is the
 # same on every unit and isn't used. This script runs before /mnt/config is mounted, so S38initdir loads the
-# seed right after mounting it; this script saves a fresh one at shutdown (S48scbox2 also saves one every 6 h).
+# seed right after mounting it (and saves a fresh one at once); this script saves a fresh one at shutdown.
 
 [ -c /dev/urandom ] || exit 0
 
@@ -250,13 +266,15 @@ def edit_bfgminer_json(t):
 
 # ---------------------------------------------------------------- /etc/fstab (defense in depth)
 def edit_fstab(t):
-    """Carry the same secure /mnt/config options in fstab, in case anything triggers a `mount -a` or a
-    remount (S38initdir is the live mount; this is belt-and-braces)."""
+    """The settings partition as cfgmount mounts it (read-only at /mnt/cfgflash, the secure options), noauto: a
+    `mount -a` must never mount it read-write, nor over the RAM copy at /mnt/config. (S38initdir is the live mount;
+    this is belt-and-braces. The stock line had no effect at boot either: /mnt/config doesn't exist yet when inittab
+    runs `mount -a`.)"""
     _assert_md5(t, "/etc/fstab")
     s = t.text("/etc/fstab")
     s = _replace_once(s,
                       "/dev/spiblock2   /mnt/config        vfat     rw,discard        0       2",
-                      "/dev/spiblock2   /mnt/config        vfat     rw,umask=077,noatime,errors=remount-ro,discard  0  2",
+                      "/dev/spiblock2   /mnt/cfgflash      vfat     ro,noauto,umask=077,noatime,errors=remount-ro  0  0",
                       "/etc/fstab spiblock2")
     t.put("/etc/fstab", s.encode(), 0o644)
     return s

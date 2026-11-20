@@ -1,13 +1,14 @@
 #!/bin/sh
 # Build the SC Box II panel (scbox2-agent) from the shared panel source.
-#   Usage: [TAGS=scbox2,public] tools/build-agent-box2.sh AGENT_SRC_DIR OUT_BINARY
-#   TAGS: the build tags (default scbox2, the owner's commissioning build; scbox2,public for the public release).
+#   Usage: [TAGS=scbox2] tools/build-agent-box2.sh AGENT_SRC_DIR OUT_BINARY
+#   TAGS: the build tags; by default scbox2,public, the public release. TAGS=scbox2 builds the developer's own
+#   commissioning build, only when asked for explicitly.
 # The same source builds the SC Lite panel by default; -tags scbox2 selects brand_scbox2.go (the Box II's
 # paths and names). The Go module is renamed scbox2-agent in a scratch copy so the binary's embedded source
 # paths carry the Box II name too; the source tree itself is not modified. Reproducible: -trimpath, no VCS
 # stamp, vendored modules, the local Go toolchain only.
 set -eu
-SRC=$(cd "$1" && pwd); OUT=$2; TAGS=${TAGS:-scbox2}
+SRC=$(cd "$1" && pwd); OUT=$2; TAGS=${TAGS:-scbox2,public}
 case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac # a relative output path is taken from where the script was run
 case ",$TAGS," in *,scbox2,*) ;; *) echo "TAGS must include scbox2 (got: $TAGS)"; exit 1 ;; esac
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

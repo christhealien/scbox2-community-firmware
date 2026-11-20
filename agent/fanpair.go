@@ -106,7 +106,10 @@ func fanLvl(name string) (int, error) {
 
 func setFanLvl(name string, v int) error {
 	v = clampInt(v, fanFloor(), 100) // the driver turns a huge or 0 level into "PWM off": never write one
-	return os.WriteFile(filepath.Join(fanSysDir, name, "lvl"), []byte(strconv.Itoa(v)), 0644)
+	end := traceWrite("sysfs " + name + "/lvl = " + strconv.Itoa(v))
+	err := os.WriteFile(filepath.Join(fanSysDir, name, "lvl"), []byte(strconv.Itoa(v)), 0644)
+	end(err)
+	return err
 }
 
 // fanPairTarget: pair B's level for pair A's level a with offset off.
@@ -313,7 +316,7 @@ func handleFanPair(w http.ResponseWriter, r *http.Request) {
 		}
 		b, _ := json.Marshal(map[string]int{"offset": *in.Offset})
 		if err := writeAtomic(fanPairPath(), b, 0644); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		fpRunMu.Lock() // a tick that read the old offset can't write pair B after this

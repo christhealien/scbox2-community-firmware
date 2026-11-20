@@ -295,6 +295,8 @@ type tunerEngine struct {
 	restoreFailed bool      // the end couldn't put the miner back (the boot-time recovery tries again)
 
 	fanCur     int         // last fan % the hold set (start of a run = current)
+	fanVirt    int         // the SC Box II: the hold's own output, written only in steps (holdFan, tunerFanDeadband)
+	fanEMA     float64     // the SC Box II: that output smoothed over about a minute (what is written; 0 = none yet)
 	holdTarget float64     // temperature the hold is aiming at (changes per preset)
 	confirmed  bool        // a confirm run passed — stay on the setting (don't restore baseline)
 	fanAt      map[int]int // clock MHz -> fan % that held the target (for preset curves)
@@ -355,6 +357,9 @@ type tunerEngine struct {
 	trimStats    tunerStats                    // the last test trimAndRetest ran
 	lastWatchEnd time.Time                     // when the last test ended
 	fh           fanHold
+	fanQuiet     bool                  // inside a clock confirmation's first box2ConfirmQuiet: the hold only raises the fans
+	ending       atomic.Bool           // the run's end is putting the miner back: a confirmation then ignores Stop (box2Coop)
+	persistPlan  func(planMV)          // the run ended on a setting the owner keeps: onto the flash (SC Box II; nil: nothing)
 	passes       []planMV              // every clean test of the curve, in order (the confirm's candidates)
 	marginal     map[[2]int]string     // clean but close: why (a chip near its limit, or clean only on the retest)
 	testStats    map[[2]int]tunerStats // the last test of each (MHz, mV), for reuse (High reuses its confirm)
@@ -365,6 +370,10 @@ type tunerEngine struct {
 	liftedAt     planMV
 	trimFutile   map[futileKey]bool // (clock, chip) that still failed at the deepest trim
 	floorPV      int                // the lowest PV that still lowers the boards' voltage (0 = not found): below it the miner holds
+	baseTrims    map[[2]int]float64 // SC Box II: the chip trims at the baseline (the run's own trims are the difference)
+	curMade      *[]madeTrim        // the trims trimAndRetest made for the test being fixed (box2TrimsCanFix's slots)
+	trimFileOnly atomic.Bool        // trimSet writes the trims file only, no live re-send (SC Box II: the run's end)
+	liveTrims    [][]float64        // SC Box II: the chips slowed in the test being watched ([board, chip, MHz]: the live map)
 }
 
 // attCtx: which run-plan item a test belongs to (the curve's clock, a confirm candidate, a preset), and how
@@ -406,6 +415,11 @@ type testResult struct {
 	ErrAdd int     `json:"err_add"`
 	MinS   float64 `json:"min_s"`
 	Reason string  `json:"reason"`
+	// SC Box II (v0.5.5; never set on the SC Lite): the chips the run had slowed during the test and the MHz they took
+	// off in all, and the power estimate (power_box2.go) for the setting with them (0: none)
+	Trims    int     `json:"trims,omitempty"`
+	TrimMHz  float64 `json:"trim_mhz,omitempty"`
+	EstWatts float64 `json:"est_w,omitempty"`
 }
 
 // testChipMap is one finished test's chip map: every chip's new errors against its limit. Kept for each
@@ -421,6 +435,8 @@ type testChipMap struct {
 	MinS   float64     `json:"min_s"`
 	Judged bool        `json:"judged"`
 	Chips  [][]float64 `json:"chips,omitempty"` // [board, chip, new errors, limit, normal errors/hour]
+	// SC Box II (v0.5.5): the chips slowed during the test, [board, chip, trim MHz] in the map's own numbering
+	Trims [][]float64 `json:"trims,omitempty"`
 }
 
 // liveReading is one poll sample during a test — a row in Live readings (.csv).
@@ -444,18 +460,26 @@ func (e *tunerEngine) recordResult(p planMV, clean bool, reason string, st tuner
 	case strings.Contains(reason, "°C") || strings.Contains(reason, "overheat"):
 		res = "aborted"
 	}
+	h := p.hw() // (the code on the Box II: the views and files show what the miner was given)
+	row := testResult{
+		Time: e.now().Format("15:04:05"), MHz: p.MHz, MV: h.MV, PV: h.PV,
+		Result: res, THS: st.AvgGHS / 1000.0, MaxT: st.MaxT, Fan: st.AvgFan,
+		ErrAdd: st.Total, MinS: st.WatchedMin, Reason: reason,
+	}
+	var mapTrims [][]float64
+	if tunerOnBox2() { // the chips slowed in this test, its power estimate with them (outside e.mu: they read files)
+		mapTrims, row.Trims, row.TrimMHz = e.box2TestTrims(st)
+		if w, ok := box2TrimmedWatts(h.MHz, h.MV, row.TrimMHz, max(len(st.Gained), model.ChipsPerBoard)); ok {
+			row.EstWatts = w
+		}
+	}
 	e.mu.Lock()
 	if e.liveFor.MHz == p.MHz && e.liveFor.PV == p.pvOf() && !e.liveFor.Done {
 		e.liveFor.Done, e.liveFor.Result, e.liveFor.Reason, e.liveFor.Ended = true, res, reason, e.now().Unix()
 	}
-	h := p.hw() // (the code on the Box II: the views and files show what the miner was given)
-	e.results = append(e.results, testResult{
-		Time: e.now().Format("15:04:05"), MHz: p.MHz, MV: h.MV, PV: h.PV,
-		Result: res, THS: st.AvgGHS / 1000.0, MaxT: st.MaxT, Fan: st.AvgFan,
-		ErrAdd: st.Total, MinS: st.WatchedMin, Reason: reason,
-	})
+	e.results = append(e.results, row)
 	m := testChipMap{N: len(e.testMaps), Time: e.now().Format("2006-01-02 15:04"), MHz: p.MHz, MV: h.MV, PV: h.PV,
-		Result: res, Reason: reason, MinS: st.WatchedMin, Judged: true}
+		Result: res, Reason: reason, MinS: st.WatchedMin, Judged: true, Trims: mapTrims}
 	for k, g := range st.Gained {
 		m.Chips = append(m.Chips, []float64{float64(k.B), float64(k.I), float64(g), math.Round(st.Limits[k]*10) / 10,
 			math.Round(e.baseRate[k]*10) / 10})
@@ -494,6 +518,30 @@ func (e *tunerEngine) recordReading(p planMV, ghs, maxT float64, totalErr, fan i
 	e.mu.Unlock()
 }
 
+// memoTemp: a temperature reader that answers again from its last reading for d (the settle and the fan hold each
+// read the temperature every poll: one Dashboard read (3 miner API commands and a backend GET) serves both). While
+// a clock is confirmed it reads through (the shared reading, dashshare.go, does the memo's work, with its own age).
+func memoTemp(d time.Duration, read func() (float64, bool)) func() (float64, bool) {
+	var mu sync.Mutex
+	var at time.Time
+	var t float64
+	var ok bool
+	return func() (float64, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dashShareOn() { // a clock confirmed: the shared reading is the memo (its age is what the heat abort sees)
+			at = time.Time{}
+			return read()
+		}
+		if !at.IsZero() && time.Since(at) < d {
+			return t, ok
+		}
+		t, ok = read()
+		at = time.Now()
+		return t, ok
+	}
+}
+
 func newTunerEngine(cfg tunerConfig) *tunerEngine {
 	if tunerOnBox2() {
 		cfg = box2TunerLevels(cfg) // the OEM's levels in, ranks inside the engine (clock only while the direction is unknown)
@@ -503,6 +551,14 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 	e.miningStops = intminerStopsSince
 	e.fanFloor, e.fanGuard = fanFloor, fanGuardPair // (judged at the lower fan pair)
 	e.readTemp = func() (float64, bool) { t, _, ok := maxBoardTemp(buildDashboard()); return t, ok }
+	if tunerOnBox2() { // (the SC Box II: each Dashboard read is 3 miner-API commands; the SC Lite reads as before)
+		// while a clock is confirmed the reading is the shared one (dashshare.go), at most dashShareAge old for the
+		// heat abort: a refresh in flight is waited for rather than an older copy taken
+		e.readTemp = memoTemp(2*time.Second, func() (float64, bool) {
+			t, _, ok := maxBoardTemp(dashShareRead(dashShareAge, dashShareAge))
+			return t, ok
+		})
+	}
 	e.readGHS = func() (float64, bool) { d := buildDashboard(); return d.GHS, d.OK }
 	e.readWork = readTotalMH
 	e.elapsed = func() (int, bool) { d := buildDashboard(); return d.Elapsed, d.OK }
@@ -534,6 +590,9 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 		if err := cwSetTrimUnless(&e.dead, chain, chip, mhz); err != nil { // (takes chipTrimMu itself)
 			return err
 		}
+		if e.trimFileOnly.Load() {
+			return nil // (SC Box II, the run's end: the file only; the clock put back next applies it)
+		}
 		// the hook reports every 10 s and any setting write (the fan hold's too) makes its last report stale
 		var err error
 		for i := 0; i < 4; i++ {
@@ -542,6 +601,9 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 			}
 			if _, at, ok := readChipStats(); !ok || time.Since(at) > 45*time.Second {
 				break // the hook stopped reporting: no use waiting
+			}
+			if tunerOnBox2() && (e.stopped() || e.aborted() || e.ending.Load()) {
+				break // (SC Box II: the run is ending, a heat abort first: its safe clock now; the end sets the file)
 			}
 			e.sleep(10 * time.Second)
 		}
@@ -570,14 +632,18 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 			if e.dead.Load() {
 				return errTunerDead
 			}
-			return box2TunerApply(e.planGen, p)
+			if err := e.box2FansBeforeRaise(p); err != nil {
+				return err // no clock raise without the fans up first (applyWait's retry tries both again)
+			}
+			return box2TunerApplyCoop(e.planGen, p, e.confirmCoop())
 		}
+		e.persistPlan = func(p planMV) { h := p.hw(); box2PersistPlan(h.MHz, h.MV) }
 		e.verifyPlan = func(p planMV) string { return verifyTunePlan(p.hw()) }
 		e.before = box2TunerBefore
 		e.readVolt = nil // no voltage reading to search on (PV reads 0; the floor check works in PV): "V" is the OEM's level
 	}
 	e.fanAt = map[int]int{}
-	e.fanCur = e.cfg.FanMinPct
+	e.fanCur, e.fanVirt, e.fanEMA = e.cfg.FanMinPct, 0, 0
 	return e
 }
 
@@ -585,6 +651,7 @@ func newTunerEngine(cfg tunerConfig) *tunerEngine {
 func (e *tunerEngine) logQuiet(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	line := e.now().Format("15:04:05") + "  " + msg
+	traceNote("tuner: %s", msg)
 	e.alive()
 	e.mu.Lock()
 	e.logbuf = append(e.logbuf, line)
@@ -706,7 +773,13 @@ func (e *tunerEngine) checkTemp() error {
 //   - up at most 5 a reading (10 when more than 3 °C over), down at most 2, and not down while warming;
 //   - full fan from 8 °C over; leaving full fan it drops back to the level it last held steadily;
 //   - it starts from the fan the miner is on, and re-sends every 60 s (the firmware walks it back).
+//
+// The SC Box II (gentle, v0.5.4): full fan from min(target+8, abort−2) °C; the integral doesn't grow while the
+// output is held back by the step limit (anti-windup: it would otherwise keep pushing after the temperature is
+// back), and leaving full fan it is set so the output carries on from the level it drops back to (bumpless).
 type fanHold struct {
+	gentle     bool    // the SC Box II: smaller steps and an early nudge while warming (see want)
+	abortC     float64 // the run's abort temperature (gentle: full fan from min(target+8, abort−2); 0 = not known)
 	init       bool
 	base, i    float64
 	lastT      float64
@@ -718,9 +791,22 @@ type fanHold struct {
 }
 
 func (h *fanHold) want(temp, target float64, cur, fanMin, fanMax int) int {
-	const kp, ki, iMax, up, down, fullAt = 3.0, 0.3, 25.0, 5, 2, 8.0
+	kp, ki, iMax, up, down, fullAt := 3.0, 0.3, 25.0, 5, 2, 8.0
+	if h.gentle {
+		// the SC Box II's single board warms and cools quickly and the owner saw the SC Lite tuning overshoot to
+		// 80 °C and then blast the fans: half the gain, small steps, and (below) fan added before the target is
+		// reached while the temperature climbs, so it trickles up to the target instead
+		kp, ki, up, down = 2.0, 0.15, 2, 1
+	}
+	if h.gentle && h.abortC > 0 && h.abortC-2-target < fullAt {
+		fullAt = math.Max(1, h.abortC-2-target)
+	}
 	err := temp - target
 	rising := h.haveLast && temp > h.lastT+0.2
+	climb := 0.0
+	if h.haveLast {
+		climb = temp - h.lastT
+	}
 	h.lastT, h.haveLast = temp, true
 	if err >= fullAt {
 		h.full = true
@@ -732,31 +818,61 @@ func (h *fanHold) want(temp, target float64, cur, fanMin, fanMax int) int {
 		if h.haveSteady {
 			back = h.steady
 		}
-		return max(fanMin, min(fanMax, max(back, cur-3*down)))
+		out := max(fanMin, min(fanMax, max(back, cur-3*down)))
+		if h.gentle { // bumpless: the next reading carries on from out, not from the start level
+			h.i = math.Max(-iMax, math.Min(iMax, float64(out)-h.base-kp*err))
+		}
+		return out
+	}
+	c := float64(cur)
+	st := float64(up)
+	if err > 3 {
+		st = 2 * float64(up)
 	}
 	atMin, atMax := cur <= fanMin, cur >= fanMax
 	if math.Abs(err) > 0.5 && !((atMin && err < 0) || (atMax && err > 0)) {
-		h.i = math.Max(-iMax, math.Min(iMax, h.i+ki*err))
+		grow := true
+		if h.gentle { // anti-windup: not while the step limit already holds the output back in that direction
+			p0 := h.base + kp*err + h.i
+			grow = !((err > 0 && p0 > c+st) || (err < 0 && p0 < c-float64(down)))
+		}
+		if grow {
+			h.i = math.Max(-iMax, math.Min(iMax, h.i+ki*err))
+		}
 	}
 	w := h.base + kp*err + h.i
-	c := float64(cur)
+	if h.gentle && climb > 0.2 && err > -2 {
+		// still climbing near the target: one more step now rather than many after it overshoots
+		w = math.Max(w, c+1)
+	}
 	switch {
 	case w > c:
-		st := float64(up)
-		if err > 3 {
-			st = 2 * up
-		}
 		w = math.Min(c+st, w)
 	case rising:
 		w = c // still warming: don't take fan away
 	default:
-		w = math.Max(c-down, w)
+		w = math.Max(c-float64(down), w)
 	}
 	out := int(math.Round(math.Max(float64(fanMin), math.Min(float64(fanMax), w))))
 	if math.Abs(err) <= 1.5 {
 		h.steady, h.haveSteady = out, true
 	}
 	return out
+}
+
+// rebase: the fans were set to out from outside the hold (box2FansBeforeRaise, before a clock raise): the integral is
+// set so the hold carries on from out (bumpless), not from the level it wound up to at the lower clock (which pulled
+// the fans back down while the new clock warmed the board, then overshot).
+func (h *fanHold) rebase(out int, target float64) {
+	if !h.init || !h.haveLast {
+		return
+	}
+	kp, iMax := 3.0, 25.0
+	if h.gentle {
+		kp = 2.0
+	}
+	h.full = false
+	h.i = math.Max(-iMax, math.Min(iMax, float64(out)-h.base-kp*(h.lastT-target)))
 }
 
 // holdFan: one reading of the fan hold. Returns the fan % now set. A no-op in dry-run or with fan-hold off.
@@ -776,15 +892,45 @@ func (e *tunerEngine) holdFan(target float64) int {
 			}
 		}
 		start = max(e.cfg.FanMinPct, min(100, start))
-		e.fh = fanHold{init: true, base: float64(start)}
-		e.fanCur = start
+		e.fh = fanHold{init: true, base: float64(start), gentle: model.Plan == planBox2V, abortC: e.cfg.AbortC}
+		e.fanCur, e.fanVirt, e.fanEMA = start, 0, 0
 	}
 	lo := e.cfg.FanMinPct
 	if e.fanFloor != nil {
 		lo = max(lo, e.fanFloor())
 	}
-	want := e.fh.want(t, target, e.fanCur, lo, 100)
-	if want != e.fanCur || e.now().Sub(e.fh.sent) >= time.Minute {
+	cur := e.fanCur
+	if tunerOnBox2() && e.fanVirt > 0 {
+		cur = e.fanVirt // the controller carries on from its own output, written or not
+	}
+	want := e.fh.want(t, target, cur, lo, 100)
+	since := e.now().Sub(e.fh.sent)
+	if tunerOnBox2() {
+		e.fanVirt = want
+		if e.fanEMA == 0 {
+			e.fanEMA = float64(e.fanCur)
+		}
+		e.fanEMA += 0.25 * (float64(want) - e.fanEMA) // (a board wobbling about the target: its average, not each swing)
+		cand := int(math.Round(e.fanEMA))
+		if want > e.fanCur && t >= target+tunerFanHot {
+			cand = max(cand, want) // clearly over the target: the hold's own raise, at once
+		}
+		if tunerFanBox2Write(cand, e.fanCur, t, target, since) {
+			want = cand
+		} else {
+			want = e.fanCur // (v0.5.6) a small step: it waits until the change adds up, or for tunerFanSettle
+		}
+	} else if tunerFanWriteWait(want, e.fanCur, t, target, since) {
+		want = e.fanCur // (v0.5.4) too soon after the last fan write: this one waits for a later reading
+	}
+	if e.fanQuiet && want <= e.fanCur {
+		return e.fanCur // a clock ramping (box2ConfirmQuiet): only a raise is written, no re-send
+	}
+	resend := time.Minute
+	if tunerOnBox2() {
+		resend = tunerFanResend
+	}
+	if want != e.fanCur || since >= resend {
 		if err := e.applyFan(want); err == nil {
 			e.fanCur, e.fh.sent = want, e.now()
 		}
@@ -793,11 +939,119 @@ func (e *tunerEngine) holdFan(target float64) int {
 		if f := e.fanGuard(e.fanCur); f > 0 {
 			e.log("  %s watchdog flagged a fan at %d %% (it stops mining while a fan looks failed): the fans stay at %d %% or more from now on", OemOf(), e.fanCur, f)
 			if e.fanCur < f && e.applyFan(f) == nil {
-				e.fanCur, e.fh.sent = f, e.now()
+				e.fanCur, e.fanVirt, e.fanEMA, e.fh.sent = f, f, float64(f), e.now()
 			}
 		}
 	}
 	return e.fanCur
+}
+
+// confirmCoop: what the run keeps doing while the SC Box II confirms one of its clock/voltage writes (box2Coop; the
+// wait can be minutes): its Stop (about every second), and at its poll (at least every 10 s) the temperature check
+// (the heat abort) and the fan hold, which in the first box2ConfirmQuiet only raises the fans. While the end puts the
+// miner back (e.ending) a Stop and the heat abort don't cut that write's confirmation short: it is the put-back.
+func (e *tunerEngine) confirmCoop() *box2Coop {
+	every := time.Duration(e.cfg.PollS * float64(time.Second))
+	if every <= 0 || every > 10*time.Second {
+		every = 10 * time.Second
+	}
+	return &box2Coop{
+		every: every,
+		stop: func() error {
+			e.alive()
+			if e.dead.Load() {
+				return errTunerDead
+			}
+			if !e.ending.Load() && e.stopped() {
+				return errTunerStopped
+			}
+			return nil
+		},
+		tick: func(quiet bool) error {
+			e.alive()
+			err := e.checkTemp()
+			e.fanQuiet = quiet
+			e.holdFan(e.holdTarget)
+			e.fanQuiet = false
+			if err != nil && !e.ending.Load() {
+				e.log("  %v while the miner was still taking the new clock: stopping", err)
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+// box2FansBeforeRaise: on the SC Box II, before a write that raises the clock or the voltage (a test, the baseline
+// from a lower clock, the confirmed setting or the baseline put back at the end), the fans to at least
+// box2RaiseFanPct (70 %), or the hold's value if higher, in a write of their own first. An error (that write, or
+// reading the setting for it, failed): the clock isn't raised (the caller returns it).
+func (e *tunerEngine) box2FansBeforeRaise(p planMV) error {
+	if !tunerOnBox2() || e.cfg.DryRun {
+		return nil
+	}
+	h := p.hw()
+	floor := 0
+	if e.cfg.FanHold {
+		floor = e.fanCur
+	}
+	f, err := box2RaiseFansFirst(e.planGen, h.MHz, h.MV, floor)
+	if err != nil {
+		e.logQuiet("  the fans couldn't be raised before %s (%v): the clock isn't raised either", p.text(), err)
+		return err
+	}
+	if f <= 0 {
+		return nil
+	}
+	if e.cfg.FanHold && f > e.fanCur {
+		e.logQuiet("  fans to %d %% before raising the clock or voltage to %s", f, p.text())
+		e.fanCur, e.fanVirt, e.fanEMA, e.fh.sent = f, f, float64(f), e.now()
+		e.fh.rebase(f, e.holdTarget)
+	}
+	return nil
+}
+
+// tunerFanGap: on the SC Box II the fan hold writes the fans (each write is a whole plan PUT to the OEM's backend,
+// which hands the miner the full clock/voltage/fan setting again) at most this often, whatever the poll; a raise
+// while at or over the target is never held back.
+var tunerFanGap = 10 * time.Second
+
+// The SC Box II's fan writes (v0.5.6). Each one is a whole plan PUT, and minerd hands the miner its setting again;
+// an owner's 17-hour run had one such write land in the same second as a new job from the pool, and the OEM's
+// mining program shut down and restarted. The hold wrote about every 15 s (194 writes in 71 minutes, one or two
+// percent at a time, and the same value again every minute). Now: a change is written once it adds up to
+// tunerFanDeadband %, or after tunerFanSettle if it stays smaller, never closer than tunerFanGap; a raise once the
+// board is tunerFanHot °C over the target goes at once (full fan and the heat abort are unchanged); the same value is
+// re-sent only every tunerFanResend.
+var (
+	tunerFanHot      = 1.0
+	tunerFanDeadband = 3
+	tunerFanSettle   = 2 * time.Minute
+	tunerFanResend   = 5 * time.Minute
+)
+
+// tunerFanBox2Write: the SC Box II's hold writes want now (cur: the fan % last written; since: since that write).
+func tunerFanBox2Write(want, cur int, temp, target float64, since time.Duration) bool {
+	d := want - cur
+	if d == 0 {
+		return false
+	}
+	if d > 0 && temp >= target+tunerFanHot {
+		return true // more air clearly over the target: never held back
+	}
+	if since < tunerFanGap && since >= 0 {
+		return false
+	}
+	return d >= tunerFanDeadband || -d >= tunerFanDeadband || since >= tunerFanSettle || since < 0
+}
+
+// tunerFanWriteWait: this fan change waits (the last write was under tunerFanGap ago, and it isn't a raise at or
+// over the target). The SC Lite: never.
+func tunerFanWriteWait(want, cur int, temp, target float64, since time.Duration) bool {
+	if !tunerOnBox2() || want == cur || since >= tunerFanGap || since < 0 {
+		return false
+	}
+	return !(want > cur && temp >= target)
 }
 
 // settle applies a plan (or logs the intent in dry-run) and waits minutes (0 = SettleMin), reading the
@@ -820,6 +1074,10 @@ func (e *tunerEngine) settle(p planMV, minutes float64) error {
 			if err == errTunerStopped {
 				return abortErr{"stopped"}
 			}
+			var ae abortErr
+			if errors.As(err, &ae) { // the heat abort (or the missing temperature) while the clock was confirmed
+				return ae
+			}
 			return abortErr{"apply failed: " + err.Error()}
 		}
 		e.lastApply = e.now()
@@ -831,6 +1089,7 @@ func (e *tunerEngine) settle(p planMV, minutes float64) error {
 	if err := e.checkTemp(); err != nil {
 		return err
 	}
+	e.box2LiveTrims() // (SC Box II: the chips slowed for this test, for the live chip map)
 	// a new setting: the live view starts over (nothing is counted while it settles)
 	e.mu.Lock()
 	e.live = tunerStats{}
@@ -964,19 +1223,27 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 	e.vSum, e.vN = 0, 0
 	var fans []int // the fan % each reading (the test's fan is the average of its second half)
 	maxT := 0.0
+	// snapF: the test's numbers so far, with the fan the hold held (v0.5.6: a failed test's row showed fan 0 %)
+	snapF := func() tunerStats {
+		st := e.snap(gained, limits, start, hr, maxT, holdMin)
+		if len(fans) > 0 {
+			st.AvgFan = halfAvg(fans)
+		}
+		return st
+	}
 
 	for {
 		if !e.sleepPoll(time.Duration(e.cfg.PollS * float64(time.Second))) {
-			return false, "stopped", e.snap(gained, limits, start, hr, maxT, holdMin), abortErr{"stopped"}
+			return false, "stopped", snapF(), abortErr{"stopped"}
 		}
 		if err := e.checkTemp(); err != nil {
-			return false, err.Error(), e.snap(gained, limits, start, hr, maxT, holdMin), err
+			return false, err.Error(), snapF(), err
 		}
 		// miner restart check (its error counters reset → can't judge clean)
 		// (time since the start on the monotonic clock: a wall-clock step, e.g. NTP's first sync, isn't a restart)
 		if up, ok := e.elapsed(); ok && haveUp {
 			if up+90 < up0+int(e.now().Sub(start).Seconds()) {
-				return false, "the miner restarted during the test", e.snap(gained, limits, start, hr, maxT, holdMin), nil
+				return false, "the miner restarted during the test", snapF(), nil
 			}
 		}
 		cur, err := e.readErrors()
@@ -991,7 +1258,7 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 					e.log("  no chip reading for %.0f min (%v): waiting up to %g more min for %s backend; this test then starts over", gone.Minutes(), err, e.backendGrace.Minutes(), oemOf())
 					for deadline := e.now().Add(e.backendGrace); e.now().Before(deadline); {
 						if !e.sleepPoll(15 * time.Second) {
-							return false, "stopped", e.snap(gained, limits, start, hr, maxT, holdMin), abortErr{"stopped"}
+							return false, "stopped", snapF(), abortErr{"stopped"}
 						}
 						if _, err2 := e.readErrors(); err2 == nil {
 							e.log("  chip readings are back: %s starts over", p.text())
@@ -1003,7 +1270,7 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 				}
 				gone = e.now().Sub(lastRead)
 				why := fmt.Sprintf("read chips: no chip reading for %.0f min (%v)", gone.Minutes(), err)
-				return false, why, e.snap(gained, limits, start, hr, maxT, holdMin), abortErr{why}
+				return false, why, snapF(), abortErr{why}
 			}
 			continue
 		}
@@ -1065,7 +1332,7 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 			// worst chip by margin over limit
 			worst, have := e.worstBy(gained, limits)
 			if have && float64(gained[worst]) > limits[worst] {
-				st := e.snap(gained, limits, start, hr, maxT, holdMin)
+				st := snapF()
 				st.FailChip, st.FailByChip = worst, true
 				return false, fmt.Sprintf("chip %s +%d errors (limit %.1f)", chipName(worst), gained[worst], limits[worst]), st, nil
 			}
@@ -1079,18 +1346,21 @@ func (e *tunerEngine) watch(p planMV, phase string, holdMin float64, judge bool)
 					}
 				}
 				if float64(g) > lim {
-					st := e.snap(gained, limits, start, hr, maxT, holdMin)
+					st := snapF()
 					return false, fmt.Sprintf("board %d +%d errors (limit %.1f)", b, g, lim), st, nil
 				}
 			}
 		}
 		if elapsedMin >= holdMin {
-			st := e.snap(gained, limits, start, hr, maxT, holdMin)
+			st := snapF()
 			if len(fans) > 0 {
 				st.AvgFan = halfAvg(fans)
 			}
 			if judge && e.baseGHS > 0 && e.baseMHz > 0 && e.cfg.HashTol > 0 {
 				want := e.baseGHS * pll(float64(p.MHz)) / pll(float64(e.baseMHz))
+				if tunerOnBox2() { // the SC Box II: less by what the run's chip trims take off (slowed chips do less work)
+					want = box2TrimmedWant(want, pll(float64(p.MHz)), e.box2RunTrimLoss(), len(gained))
+				}
 				if tol := math.Max(e.cfg.HashTol, 0.06); st.AvgGHS < want*(1-tol) { // readings vary 2-3 % between tests
 					return false, fmt.Sprintf("hashrate %.1f GH/s is %.0f%% below the %.1f this clock should give",
 						st.AvgGHS, (1-st.AvgGHS/want)*100, want), st, nil
@@ -1238,11 +1508,16 @@ func (e *tunerEngine) baseline(p planMV) error {
 		weak = computeWeak(baseRate, e.cfg)
 	}
 	// publish the baseline under the lock (statusView reads baseMHz/weak concurrently)
+	var bt map[[2]int]float64
+	if tunerOnBox2() && e.cfg.ChipTrim && e.trimGet != nil {
+		bt = e.trimGet() // (the run's own trims are what changes from here: box2RunTrimLoss)
+	}
 	e.mu.Lock()
 	e.baseRate = baseRate
 	e.baseMHz = p.MHz
 	e.baseGHS = st.AvgGHS
 	e.weak = weak
+	e.baseTrims = bt
 	e.mu.Unlock()
 	e.log("baseline done: %d errors across all chips, %d weak chip(s)", st.Total, len(weak))
 	return nil
@@ -1569,7 +1844,7 @@ func loadSavedCurve() savedCurve {
 	// a file from an unlocked run (re-locked since) or edited by hand: only points inside today's window
 	fLo, fHi := freqMin, freqMax
 	if loadOverclock().Acknowledged {
-		fLo, fHi = freqHardMin, effHard("freq", freqHardMax)
+		fLo, fHi = freqHardMin, ocFreqTop()
 	}
 	ok := func(p planMV) bool {
 		if tunerOnBox2() { // the clock window and the OEM's level interval (the engine's ranks stay inside it): no PV
@@ -1593,10 +1868,9 @@ func loadSavedCurve() savedCurve {
 
 func saveSavedCurve(sc savedCurve) {
 	if b, err := json.Marshal(sc); err == nil {
-		tmp := tunerCurvePath() + ".tmp"
-		if os.WriteFile(tmp, b, 0o644) == nil {
-			os.Rename(tmp, tunerCurvePath())
-		}
+		// writeAtomic (v0.5.5 P4): on the SC Box II also onto the flash, so a rebuild after a reboot has its curve
+		// (SC Lite: temp + fsync + rename, as before)
+		_ = writeAtomic(tunerCurvePath(), b, 0o644) // (a failed save: cfgNoteErr says so on the panel)
 	}
 }
 
@@ -1756,11 +2030,12 @@ func (e *tunerEngine) Run() {
 		e.stopWhy = ""
 	}
 	e.fanAt = map[int]int{}
-	e.fanCur = e.cfg.FanMinPct
+	e.fanCur, e.fanVirt, e.fanEMA = e.cfg.FanMinPct, 0, 0
 	e.holdTarget = e.cfg.FanTargetC
 	e.passes, e.testStats, e.att, e.noTemp, e.fh, e.floorPV = nil, nil, attCtx{}, 0, fanHold{}, 0
 	e.marginal = map[[2]int]string{}
 	e.lifted, e.liftedTo, e.liftedAt, e.trimFutile = nil, nil, planMV{}, map[futileKey]bool{}
+	e.baseTrims, e.liveTrims = nil, nil
 	e.mu.Unlock()
 
 	if e.cfg.FanHold && !e.cfg.DryRun {
@@ -1790,9 +2065,13 @@ func (e *tunerEngine) Run() {
 		e.onStart()
 	}
 	defer close(done)
+	// SC Box II: the run's trim writes stay in RAM; after the end below (trims kept or put back), saved once
+	defer e.box2TrimsRAMBegin()()
 	defer func() {
 		// putting the miner back can take minutes of retries: say so, not the last test with a frozen clock
 		e.setStatus("restore", "putting the miner back")
+		e.ending.Store(true)
+		defer e.ending.Store(false)
 		e.mu.Lock()
 		e.cur = nil
 		e.mu.Unlock()
@@ -1808,7 +2087,12 @@ func (e *tunerEngine) Run() {
 			if hold == nil && e.chargeNow != nil && charge0 != "idle" && e.chargeNow() == "idle" {
 				hold = errors.New("a safety stop put it on Idle during the run") // (no temperature while hashing)
 			}
-			if !(confirmed && best != nil) {
+			if tunerOnBox2() && e.cfg.ChipTrim && e.cfg.Mode == "map" {
+				// SC Box II (v0.5.5): the trims file set as the end wants it (as before the run, or that plus the
+				// trims kept), written only: no live re-send and its retries now (a heat abort must get its safe
+				// clock at once); the clock put back below applies the file
+				e.box2EndTrims(confirmed && best != nil)
+			} else if !(confirmed && best != nil) {
 				e.undoRunTrims() // (before the clock goes back: the miner applies the trims file with it)
 			}
 			switch {
@@ -1823,6 +2107,9 @@ func (e *tunerEngine) Run() {
 					e.restoreFailed = true
 				} else {
 					e.log("leaving the miner on the confirmed %s", best.text())
+					if e.persistPlan != nil {
+						e.persistPlan(*best) // the next boot starts on it too (an owner's change: SC Box II)
+					}
 				}
 			case restoreBefore != nil:
 				if err := e.retry(e.restoreWait, restoreBefore); err != nil {
@@ -1960,6 +2247,7 @@ func (e *tunerEngine) Run() {
 			}
 		}
 		if e.cfg.BuildPresets && !e.stopped() && !e.aborted() {
+			e.box2TrimsOffBeforePresets()
 			e.buildAndTestPresets(basePlan, false)
 		}
 	}
@@ -2104,6 +2392,15 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 		top = *best
 	}
 	stepF, mvStep, pmin := e.cfg.Step, e.cfg.MVStep, e.cfg.MinMV
+	if stepF <= 0 { // (validation refuses it; a zero step would round every clock to NaN)
+		stepF = model.ClockStep
+		if stepF <= 0 {
+			stepF = 12.5
+		}
+	}
+	if mvStep <= 0 {
+		mvStep = 1
+	}
 	grid := func(mhz float64) int { // round to the clock grid, as the curve's clocks are
 		return int(math.Ceil(math.Round(mhz/stepF)*stepF - 1e-9))
 	}
@@ -2132,6 +2429,9 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 	lowestClock := curve[0].MHz
 	if len(clocks) > 0 {
 		lowestClock = clocks[0]
+	}
+	if tunerOnBox2() {
+		lowestClock = curve[0].MHz // (the slowest clock the curve ran clean: a rebuild's form may name another range)
 	}
 	var mid, low, lowest planMV
 	var lowestTries []planMV
@@ -2167,10 +2467,13 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 		"Low":          {low, mk(low.MHz, low.MV+mvStep), mk(down(low.MHz, 1), orMV(down(low.MHz, 1), low.MV+mvStep))},
 		"Lowest power": lowestTries,
 	}
+	if tunerOnBox2() {
+		box2PresetTries(tries, lowestClock, top.MHz) // only clocks inside the window and the range the curve tested
+	}
 	temps := map[string]float64{}
 	if e.cfg.FanHold {
 		h := e.cfg.FanTargetC
-		w := math.Max(h, math.Min(e.cfg.WarmestC, e.cfg.AbortC-12))
+		w := math.Max(h, math.Min(e.cfg.WarmestC, e.cfg.AbortC-presetRoomC())) // (SC Lite: 12 °C, SC Box II: 8)
 		for i, n := range presetOrder {
 			temps[n] = math.Round(h + (w-h)*float64(i)/3)
 		}
@@ -2192,6 +2495,11 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 		}
 		e.setItem("presets", name, "run", "")
 		e.att = attCtx{key: "presets", item: name}
+		if len(tries[name]) == 0 { // (SC Box II: every setting it would try is outside the clocks the curve tested)
+			e.setItem("presets", name, "skip", "no clock for it inside the range the curve tested: not built")
+			e.log("PRESET %s: no setting inside the clocks the curve tested (%d MHz up to %d MHz): not built", name, lowestClock, top.MHz)
+			continue
+		}
 		if e.cfg.DryRun {
 			p := tries[name][0]
 			e.log("DRY-RUN preset %s: would test %s for %gmin%s", name, p.text(), e.cfg.PresetMin, map[bool]string{true: fmt.Sprintf(" holding %.0f°C", target)}[haveT])
@@ -2293,8 +2601,15 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 			e.setItem("presets", name, "fail", "not clean at any of its settings: not saved")
 			continue
 		}
+		h := plan.hw() // (SC Box II: the OEM's level the miner is given, no PV; SC Lite: unchanged)
+		if dup := samePresetSetting(out, h); dup != "" {
+			// (v0.5.6: a narrow clock range made Low and Lowest power the same 675 MHz / 7.58 V) one preset for it
+			e.log("PRESET %s: %s is the same setting as %s: not saved twice", name, plan.text(), dup)
+			e.setItem("presets", name, "skip", "the same setting as "+dup+": not saved twice")
+			continue
+		}
 		nOK++
-		pr := preset{Name: name, MHz: plan.MHz, MV: plan.MV, PV: plan.PV, Tested: today}
+		pr := preset{Name: name, MHz: h.MHz, MV: h.MV, PV: h.PV, Tested: today}
 		note := "passed"
 		if haveT {
 			held := st.AvgFan
@@ -2340,6 +2655,16 @@ func (e *tunerEngine) buildAndTestPresets(base planMV, presetsOnly bool) {
 			e.log("RESULT: saved %d presets, each with its own fan curve", len(out))
 		}
 	}
+}
+
+// samePresetSetting: the name of a preset in out with h's clock and voltage (and PV), or "".
+func samePresetSetting(out []preset, h planMV) string {
+	for _, o := range out {
+		if o.MHz == h.MHz && o.MV == h.MV && o.PV == h.PV {
+			return o.Name
+		}
+	}
+	return ""
 }
 
 // runClockCurve maps every clock from LowestMHz to HighestMHz, each at its lowest clean voltage: the
@@ -3175,6 +3500,17 @@ func (e *tunerEngine) statusView() map[string]any {
 		chips = append(chips, map[string]any{"b": k.B, "i": k.I, "gained": g, "limit": lim, "pct": pct, "weak": weak})
 	}
 	sort.Slice(chips, func(i, j int) bool { return chips[i]["pct"].(float64) > chips[j]["pct"].(float64) })
+	if tunerOnBox2() && len(e.liveTrims) > 0 && view.Gained != nil { // the chips slowed in this test (the live map)
+		tr := map[ckey]float64{}
+		for _, c := range e.liveTrims {
+			tr[ckey{int(c[0]), int(c[1])}] = c[2]
+		}
+		for _, c := range chips {
+			if v, ok := tr[ckey{c["b"].(int), c["i"].(int)}]; ok {
+				c["trim"] = v
+			}
+		}
+	}
 	return map[string]any{
 		"running": running, "phase": e.phase, "message": e.endMsg(),
 		"dry_run": e.cfg.DryRun, "mode": e.cfg.Mode,
@@ -3272,7 +3608,7 @@ func validateTunerConfig(c tunerConfig) error {
 	// probe-measured) hard ceilings — this is how the statistical held-run finds a stable overclock.
 	fLo, fHi := freqMin, freqMax
 	if loadOverclock().Acknowledged {
-		fLo, fHi = freqHardMin, effHard("freq", freqHardMax)
+		fLo, fHi = freqHardMin, ocFreqTop()
 	}
 	// voltages are judged as PV (mV + gap): the supply works between PV 9100 and 9600 (measured), unlocked
 	// or not; below it runs 9100 anyway, above it ignores the request
@@ -3434,13 +3770,22 @@ func (e *tunerEngine) trimAndRetest(cand planMV, ok bool, why string, st tunerSt
 	if !e.cfg.ChipTrim || e.cfg.DryRun {
 		return ok, why, err
 	}
-	for err == nil && !ok && !e.stopped() && st.FailByChip {
-		fk := futileKey{cand.MHz, st.FailChip}
-		if e.trimFutile[fk] {
-			e.log("%s: no chip trim (%s still failed at %g MHz at this clock)", cand.text(), chipName(st.FailChip), e.trimFloor())
+	e.curMade = made
+	defer func() { e.curMade = nil }()
+	for err == nil && !ok && !e.stopped() {
+		blame, byChip := e.trimBlame(cand, st, why) // (SC Lite: the chip over its own limit, as before)
+		if !byChip {
 			break
 		}
-		desc, reason := e.trimOne(st.FailChip, made)
+		fk := futileKey{cand.MHz, blame}
+		if e.trimFutile[fk] {
+			e.log("%s: no chip trim (%s still failed at %g MHz at this clock)", cand.text(), chipName(blame), e.trimFloor())
+			break
+		}
+		if !st.FailByChip {
+			e.log("%s: %s made %d of the board's errors: trying a trim on it before more voltage", cand.text(), chipName(blame), st.Gained[blame])
+		}
+		desc, reason := e.trimOne(blame, made)
 		if desc == "" {
 			if strings.Contains(reason, "is already at") && e.trimFutile != nil {
 				e.trimFutile[fk] = true // more voltage first: trying every depth again at the next step costs 4 tests
@@ -3592,6 +3937,93 @@ func (e *tunerEngine) undoRunTrims() {
 	}
 }
 
+// box2EndTrims: the SC Box II run's end. Unconfirmed: the trims file back to the trims at the baseline (e.baseTrims,
+// else the restart marker's record), whatever the run's trims did meanwhile (a failed live re-send or put-back left
+// the file unknown); confirmed: those plus the trims the run kept. The file only (trimFileOnly: no live re-send and
+// no waiting on the hook's report): the clock change that follows applies it.
+func (e *tunerEngine) box2EndTrims(keep bool) {
+	if e.trimGet == nil || e.trimSet == nil {
+		return
+	}
+	e.mu.Lock()
+	base := copyTrimMap(e.baseTrims)
+	haveBase := e.baseTrims != nil
+	run := copyTrimMap(e.runTrims)
+	e.mu.Unlock()
+	if !haveBase {
+		if b, err := os.ReadFile(tunerMarkerPath()); err == nil {
+			var m tunerMarker
+			if json.Unmarshal(b, &m) == nil {
+				for _, t := range m.Trims {
+					base[[2]int{t.Chain, t.Chip}] = t.MHz
+				}
+				haveBase = true
+			}
+		}
+	}
+	if !haveBase && len(run) == 0 {
+		return // (no baseline finished: the run trimmed nothing)
+	}
+	if !haveBase { // (no record of the trims before the run: only the run's own come off, as undoRunTrims did)
+		base = e.trimGet()
+		for k := range run {
+			delete(base, k)
+		}
+	}
+	want := copyTrimMap(base)
+	if keep {
+		for k, v := range run {
+			want[k] = v
+		}
+	}
+	e.trimFileOnly.Store(true)
+	defer e.trimFileOnly.Store(false)
+	cur := e.trimGet()
+	keys := map[[2]int]bool{}
+	for k := range cur {
+		keys[k] = true
+	}
+	for k := range want {
+		keys[k] = true
+	}
+	var failed []string
+	for _, t := range trimList(boolKeys(keys)) {
+		k := [2]int{t.Chain, t.Chip}
+		if cur[k] == want[k] {
+			continue
+		}
+		if err := e.trimSet(k[0], k[1], want[k]); err != nil {
+			failed = append(failed, fmt.Sprintf("b%d.c%d (%v)", k[0], k[1], err))
+		}
+	}
+	if len(failed) > 0 {
+		e.log("WARNING: chip trims couldn't be set back as the run ends: %s (Controls -> Chip trims)", strings.Join(failed, ", "))
+	}
+	if !keep && len(run) > 0 {
+		var parts []string
+		for _, t := range trimList(run) {
+			parts = append(parts, fmt.Sprintf("b%d.c%d", t.Chain, t.Chip))
+		}
+		e.log("chip trims this run made are taken off, as they were before it: %s", strings.Join(parts, ", "))
+		e.mu.Lock()
+		e.trimsUndone += len(run)
+		e.runTrims = map[[2]int]float64{}
+		e.mu.Unlock()
+		if e.onTrims != nil {
+			e.onTrims(map[[2]int]float64{})
+		}
+	}
+}
+
+// boolKeys: a set as a trim map (the values unused), for trimList's order.
+func boolKeys(m map[[2]int]bool) map[[2]int]float64 {
+	out := make(map[[2]int]float64, len(m))
+	for k := range m {
+		out[k] = 0
+	}
+	return out
+}
+
 func copyTrimMap(m map[[2]int]float64) map[[2]int]float64 {
 	out := make(map[[2]int]float64, len(m))
 	for k, v := range m {
@@ -3622,6 +4054,10 @@ func onPLLGrid(x float64) bool { return math.Abs(x/12.5-math.Round(x/12.5)) < 1e
 // down): from the step Lowest MHz really runs to the one Highest MHz really runs, each request the
 // smallest whole number that lands exactly on its step (587.5 → 588, 600 → 600, 612.5 → 613), so no two
 // tests run the same clock and none is skipped. Any other step counts in whole MHz as typed.
+//
+// The SC Box II (v0.5.4): a Lowest MHz off the step grid is itself the first clock (690–690 tests 690 only, not
+// 675 as well; 660–690 in 25 MHz steps tests 660, 675, 690), so the run never goes below the clock asked for. The
+// SC Lite keeps the grid's step below it (unchanged). The page's run-plan estimate counts the same list (tClockN).
 func (c tunerConfig) clockList() []int {
 	var out []int
 	if c.Step <= 0 || c.HighestMHz < c.LowestMHz {
@@ -3631,8 +4067,16 @@ func (c tunerConfig) clockList() []int {
 	// up to Highest; a Highest off the grid is still the last clock tested (blake2b-asic-control's
 	// curve_clocks)
 	k0 := int(math.Floor(float64(c.LowestMHz)/c.Step + 1e-9))
+	if tunerOnBox2() && math.Abs(float64(k0)*c.Step-float64(c.LowestMHz)) > 1e-9 {
+		out = append(out, c.LowestMHz) // the Box II: Lowest itself, then the grid's steps above it
+		k0++
+	}
 	for k := k0; float64(k)*c.Step <= float64(c.HighestMHz)+1e-9; k++ {
-		out = append(out, int(math.Ceil(float64(k)*c.Step-1e-9)))
+		m := int(math.Ceil(float64(k)*c.Step - 1e-9))
+		if len(out) > 0 && tunerOnBox2() && pll(float64(m)) <= pll(float64(out[len(out)-1])) {
+			continue // (a step that isn't a whole number of the chips' clock steps: never the same clock twice)
+		}
+		out = append(out, m)
 	}
 	if len(out) > 0 && pll(float64(c.HighestMHz)) > pll(float64(out[len(out)-1])) {
 		out = append(out, c.HighestMHz)

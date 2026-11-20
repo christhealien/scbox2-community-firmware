@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/blake2b"
+
+	"sclite-agent/internal/cfgwin"
 )
 
 const (
@@ -218,7 +220,9 @@ func Write(path, tmpName string, b []byte) error {
 		d.Sync()
 		d.Close()
 	}
-	return nil
+	// the SC Box II: the file above is the RAM copy; the settings partition gets it in a write window (nothing to do
+	// where the settings aren't a RAM copy)
+	return cfgwin.CommitPaths(path)
 }
 
 func writeFileSync(path string, b []byte, mode os.FileMode) error {

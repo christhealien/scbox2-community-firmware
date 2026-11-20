@@ -174,5 +174,5 @@ func fanGuardClear() {
 	fanGuardMu.Lock()
 	fanGuardSt, fanGuardOK = fanGuardState{}, true
 	fanGuardMu.Unlock()
-	os.Remove(fanGuardPath())
+	cfgRemove(fanGuardPath())
 }

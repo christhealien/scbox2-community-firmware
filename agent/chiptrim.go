@@ -352,7 +352,10 @@ func tailLines(p string, n int) []string {
 }
 
 // cgminerCmdParam sends {"command": c, "parameter": p} to the miner API.
-func cgminerCmdParam(c, p string) ([]byte, error) {
+func cgminerCmdParam(c, p string) (out []byte, err error) {
+	defer apiSlot()()
+	end := traceWrite("api " + c + " " + p)
+	defer func() { end(err) }()
 	d := net.Dialer{Timeout: *apiTimeout}
 	conn, err := d.Dial("tcp", *apiAddr)
 	if err != nil {
@@ -404,6 +407,33 @@ func reapplyTrims() (string, error) {
 	// one would set the boards back to an old clock)
 	if ch, _ := lastMinerChange(); time.Since(at) > 45*time.Second || at.Before(ch) {
 		return "", fmt.Errorf("the trim library's report isn't fresh yet: try again in a minute")
+	}
+	// the SC Box II (v0.5.5): not while the miner takes a new clock (a setting write on its way, or its confirmation,
+	// quiet time included): no miner-API command then (box2ClockQuietNow). Under planMu, so no clock write lands
+	// between the check and the re-send (an old clock re-sent after it would undo it). (The words "isn't fresh yet"
+	// make the tuner wait and try again.)
+	if model.Plan == planBox2V {
+		planMu.Lock()
+		defer planMu.Unlock()
+		if box2ClockQuietNow() {
+			return "", fmt.Errorf("the trim library's report isn't fresh yet: the miner is taking a new clock, try again in a minute")
+		}
+		// (v0.5.5 T4) nothing is re-sent to boards held off or parked (the owner's or a guard's Idle, the heat
+		// guard's, the fan lock, the pool guard): a clock re-sent then would start them again
+		if getCharge() == "idle" || box2SoftIdled() || heatIdleHeld() {
+			return "", fmt.Errorf("the miner is on Idle: the trims are applied when it mines again")
+		}
+		if err := miningHoldErr(); err != nil {
+			return "", fmt.Errorf("mining is held (%v): the trims are applied when it mines again", err)
+		}
+		// and the report and the last setting change read again under planMu: a write that landed while this
+		// waited for the lock makes the report above stale
+		if st, at, ok = readChipStats(); !ok || len(st.Chains) == 0 {
+			return "", fmt.Errorf("the trim library isn't reporting yet")
+		}
+		if ch, _ := lastMinerChange(); time.Since(at) > 45*time.Second || at.Before(ch) {
+			return "", fmt.Errorf("the trim library's report isn't fresh yet: try again in a minute")
+		}
 	}
 	// the report holds each board's live clock: while the miner (re)initialises a board it passes through 50 MHz
 	// and a ramp via 500, and just after a setting change it can hold the old clock. Re-sending that would set it
@@ -622,7 +652,7 @@ func chipTrimChange(w http.ResponseWriter, enable *bool, chain, chip int, mhz *f
 				return note, true
 			}
 		} else {
-			os.Remove(chipHookFlag())
+			cfgRemove(chipHookFlag())
 		}
 		markReboot(150*time.Second, 5*time.Minute, "Restarting the mining software to switch chip trims "+map[bool]string{true: "on", false: "off"}[*in.Enable]+" — hashing resumes shortly.")
 		restartMiner()

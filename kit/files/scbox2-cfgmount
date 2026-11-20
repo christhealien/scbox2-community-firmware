@@ -1,0 +1,87 @@
+#!/bin/sh
+# scbox2: the settings partition at boot (run by /etc/init.d/S38initdir, before the network, SSH and the panel).
+#
+# The settings live on a 3 MiB FAT on raw NOR flash (/dev/spiblock2): no journal, and the flash rewrites a whole
+# 64 KiB erase block for any change, so a power cut while a file is being replaced can damage it. The OEM's backend
+# rewrites its settings file for every fan step. So the partition is used READ-ONLY, and every program works on a
+# copy in RAM:
+#
+#   1. scbox2-fatfix checks (and, where that is safe, repairs) the partition while it isn't mounted;
+#   2. it is mounted read-only at /mnt/cfgflash;
+#   3. a tmpfs is mounted at /mnt/config (the path every program uses; /usr/config links there) and the partition's
+#      files are copied into it, then compared;
+#   4. the OEM's first-boot step (its network file) is done in RAM and saved.
+#
+# A file that must survive a reboot is saved by the program that wrote it, in a short write window (remount
+# read-write, crash-safe writes with a .bak, sync, remount read-only): the panel and the SSH server themselves, the
+# boot scripts with /usr/libexec/scbox2/cfgwrite. Going back to the stock firmware works as before: the partition
+# holds the same files, in the same places.
+#
+# If the RAM copy can't be made (or doesn't match), the partition is mounted read-write at /mnt/config as before
+# v0.5.2 (/tmp/scbox2-cfg-direct says why). If the partition can't be mounted at all, /mnt/config is an empty RAM
+# folder (the programs start from their defaults, nothing is saved) and /tmp/scbox2-cfg-broken says so.
+#
+# The build's start-up check runs this with another device and filesystem (SCBOX2_CFGDEV, SCBOX2_CFGFS: the build
+# host has no FAT driver).
+DEV=${SCBOX2_CFGDEV:-/dev/spiblock2}
+FS=${SCBOX2_CFGFS:-vfat}
+OPTS=${SCBOX2_CFGOPTS:-umask=077,noatime,errors=remount-ro}
+FLASH=/mnt/cfgflash
+RAM=/mnt/config
+SIZE=8m
+
+say() { echo "S38initdir: $*"; }
+
+mkdir -p $FLASH $RAM
+# once per boot (S38initdir restart must not put a fresh copy over the settings in use)
+if grep -q " $FLASH " /proc/mounts 2>/dev/null || grep -q " $RAM " /proc/mounts 2>/dev/null; then
+	say "settings already mounted: nothing done"
+	exit 0
+fi
+rm -f /tmp/scbox2-cfg-broken /tmp/scbox2-cfg-direct
+
+# 1. check (and, where that is safe, repair) the partition before it is mounted
+if [ -x /usr/bin/scbox2-fatfix ] && [ "$FS" = vfat ]; then
+	/usr/bin/scbox2-fatfix $DEV > /tmp/scbox2-fatfix.log 2>&1
+	say "settings partition check: exit $? (/tmp/scbox2-fatfix.log)"
+fi
+
+# 2. read-only
+if ! mount -t $FS -o ro,$OPTS $DEV $FLASH; then
+	echo "scbox2: the settings partition could not be mounted (S38initdir): settings start from defaults and can't be saved" > /tmp/scbox2-cfg-broken
+	say "settings partition mount failed: settings in RAM only (defaults)"
+	mount -t tmpfs -o size=$SIZE,mode=0700 scbox2-config $RAM
+	# the network config lives here (/etc/network/interfaces links to it): without it the miner gets no address
+	mkdir -p $RAM/etc/network
+	cp /root/interfaces $RAM/etc/network/interfaces
+	exit 1
+fi
+mount -o remount,ro $FLASH 2>/dev/null	# (it is already: belt and braces, whatever the options did)
+
+# direct: the partition read-write at /mnt/config, as before v0.5.2
+direct() {
+	echo "scbox2: $1: the settings partition is used directly (written while the miner runs, as before v0.5.2)" > /tmp/scbox2-cfg-direct
+	say "$1: settings partition mounted read-write at $RAM"
+	umount $RAM 2>/dev/null
+	umount $FLASH
+	if ! mount -t $FS -o $OPTS $DEV $RAM; then
+		echo "scbox2: the settings partition could not be mounted (S38initdir)" > /tmp/scbox2-cfg-broken
+		mount -t tmpfs -o size=$SIZE,mode=0700 scbox2-config $RAM
+	fi
+	mkdir -p $RAM/etc/network
+	[ -f $RAM/etc/network/interfaces ] || cp /root/interfaces $RAM/etc/network/interfaces
+	exit 0
+}
+
+# 3. the RAM copy
+mount -t tmpfs -o size=$SIZE,mode=0700 scbox2-config $RAM || direct "no RAM folder"
+cp -a $FLASH/. $RAM/ 2>/dev/null || direct "the settings didn't fit in RAM"
+diff -r $FLASH $RAM >/dev/null 2>&1 || direct "the RAM copy of the settings doesn't match"
+say "settings in RAM ($(du -sk $RAM | cut -f1) KiB), the settings partition read-only"
+
+# 4. the OEM's first-boot step (it copied its network file onto the partition here)
+mkdir -p $RAM/etc/network
+if [ ! -f $RAM/etc/network/interfaces ]; then
+	cp /root/interfaces $RAM/etc/network/interfaces && /usr/libexec/scbox2/cfgwrite etc/network/interfaces
+fi
+exit 0

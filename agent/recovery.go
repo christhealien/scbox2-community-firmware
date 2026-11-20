@@ -22,9 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
-	"os/signal"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,7 +58,6 @@ var (
 	wdtStop                    chan struct{}
 	recLastSave                string // the last saved log tail (skip identical writes)
 	recUnexp                   *unexpectedRestart
-	wdtSigOnce                 sync.Once
 	wdtStarting                bool
 	wdtBootByWDT, wdtBootKnown bool // the driver's word on the last reset, read when it was opened
 
@@ -79,13 +80,15 @@ func recoveryConfigLoad() recoveryConfig {
 }
 
 // markCleanReboot: the panel (or its updater) is about to reboot on purpose. This is also the moment to
-// flush the hot files that are kept in RAM and only checkpointed ~hourly on the Box II (to spare the FAT
-// flash): a reboot would otherwise lose up to an hour of hashrate history and events. Cheap and harmless
-// on SC Lite, where these are already written frequently.
+// flush the hot files: on the Box II with its settings in RAM, the hashrate history, the events and the other hot
+// files reach the flash only at a checkpoint (cfgCheckpoint: a reboot the panel makes, the panel stopped) or with an
+// owner's save that touches them, never on a timer; a reboot would otherwise lose everything since the last one.
+// Cheap and harmless on SC Lite, where these are already written frequently.
 func markCleanReboot() {
 	persistHashrate()
 	eventsSave()
 	os.WriteFile(recCleanPath(), []byte(time.Now().Format(time.RFC3339)), 0644)
+	cfgCheckpoint() // the Box II: the panel's files (hot ones included) from RAM onto the flash (cfgshadow.go)
 }
 
 const (
@@ -231,15 +234,7 @@ func watchdogStart() error {
 			}
 		}
 	}()
-	wdtSigOnce.Do(func() { // the boot script's stop / shutdown: disarm first, then exit as before
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGTERM)
-		go func() {
-			<-sig
-			watchdogStop()
-			os.Exit(0)
-		}()
-	})
+	installShutdownHandler() // the boot script's stop / shutdown: disarm first, then exit as before (cfgshadow.go)
 	activity.emit("⏱ hardware watchdog on: the miner reboots itself if the control board stops")
 	return nil
 }
@@ -296,12 +291,12 @@ func writeAlive() {
 	cfgWrite(recAlivePath(), b, 0644)
 }
 
-func saveUnexpected() {
+func saveUnexpected() error {
 	if recUnexp == nil {
-		return
+		return nil
 	}
 	b, _ := json.Marshal(recUnexp)
-	cfgWrite(recUnexpPath(), b, 0644)
+	return cfgWrite(recUnexpPath(), b, 0644)
 }
 
 func bootTime() int64 {
@@ -382,9 +377,11 @@ func recoveryStartup() {
 		defer tk.Stop()
 		// Both the last-alive note and the kept-log tail land on flash. On the Box II's FAT they are thinned
 		// (R04/R19): the alive note every ~5 min (enough to spot an unexpected restart) and the log tail every
-		// ~10 min, instead of every 1 and 2 min. On SC Lite's ext the original cadence is kept.
-		aliveMod := int(cfgCheckpointGap(5*time.Minute, time.Minute) / time.Minute)
-		keepMod := int(cfgCheckpointGap(10*time.Minute, 2*time.Minute) / time.Minute)
+		// ~10 min, instead of every 1 and 2 min; with its settings in RAM (v0.5.2: each of these opens a write
+		// window on the flash, the only writes while the miner runs) every 15 and 30 min (keepLogEvery). On SC
+		// Lite's ext the original cadence is kept.
+		aliveEvery, keepEvery := keepLogEvery()
+		aliveMod, keepMod := int(aliveEvery/time.Minute), int(keepEvery/time.Minute)
 		for n := 0; ; n++ {
 			recMu.Lock()
 			on := recCfg.Watchdog || recCfg.KeepLog
@@ -401,6 +398,15 @@ func recoveryStartup() {
 	}()
 }
 
+// keepLogEvery: how often the last-alive note and the kept-log tail are saved (both land on the flash).
+func keepLogEvery() (alive, keep time.Duration) {
+	alive, keep = cfgCheckpointGap(5*time.Minute, time.Minute), cfgCheckpointGap(10*time.Minute, 2*time.Minute)
+	if cfgShadow() { // the settings in RAM: each save is a write window on the flash
+		alive, keep = max(alive, 15*time.Minute), max(keep, 30*time.Minute)
+	}
+	return alive, keep
+}
+
 // recoveryCheckRestart: the previous boot's "alive" note is older than this boot → this is a new
 // boot. Its kept log becomes "before the restart"; without a clean-reboot note it was unexpected.
 func recoveryCheckRestart(boot int64) {
@@ -415,6 +421,8 @@ func recoveryCheckRestart(boot int64) {
 	}
 	_, clean := os.Stat(recCleanPath())
 	os.Remove(recCleanPath())
+	// the Box II: the notes used up, and the kept log's new name, onto the flash too (one window, at start)
+	cfgPersist(recAlivePath(), recCleanPath(), keptLogPath(), keptLogBeforePath())
 	if clean == nil {
 		return
 	}
@@ -434,11 +442,21 @@ func recoveryView() map[string]any {
 	defer recMu.Unlock()
 	v := map[string]any{"ok": true, "watchdog": recCfg.Watchdog, "keep_log": recCfg.KeepLog,
 		"watchdog_running": wdtFile != nil, "watchdog_timeout_s": wdtTimeout}
+	alive, keep := keepLogEvery()
+	v["keep_log_every_min"], v["alive_every_min"] = int(keep/time.Minute), int(alive/time.Minute)
+	v["keep_log_flash"] = cfgShadow()
 	if wdtErr != "" {
 		v["watchdog_err"] = wdtErr
 	}
 	if fi, err := os.Stat(keptLogBeforePath()); err == nil {
 		v["kept_before"] = fi.ModTime().Unix()
+	}
+	if syslogRemoteAvail() {
+		v["syslog_remote_avail"] = true
+		v["syslog_remote"] = syslogRemoteGet()
+		if e := syslogApplyErrGet(); e != "" {
+			v["syslog_remote_err"] = e // saved, but syslogd wasn't restarted for it: what it does now is unknown
+		}
 	}
 	if recUnexp != nil && !recUnexp.Dismissed {
 		v["unexpected"] = recUnexp
@@ -455,17 +473,32 @@ func handleRecovery(w http.ResponseWriter, r *http.Request) {
 		Watchdog *bool `json:"watchdog"`
 		KeepLog  *bool `json:"keep_log"`
 		Dismiss  bool  `json:"dismiss"`
+		// the SC Box II: Settings → Troubleshooting "send the system log to this computer" (host:port, "" = off)
+		SyslogRemote *string `json:"syslog_remote"`
 	}
 	if !decodeIn(w, r, &in) {
 		return
 	}
+	if in.SyslogRemote != nil {
+		if err := syslogRemoteSet(*in.SyslogRemote); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		writeJSON(w, recoveryView())
+		return
+	}
 	if in.Dismiss {
 		recMu.Lock()
+		var err error
 		if recUnexp != nil {
 			recUnexp.Dismissed = true
-			saveUnexpected()
+			err = saveUnexpected()
 		}
 		recMu.Unlock()
+		if err != nil { // (dismissed in memory all the same)
+			writeJSON(w, map[string]any{"ok": false, "err": "dismissed until the panel restarts, but " + cfgSaveErr(err)})
+			return
+		}
 		writeJSON(w, recoveryView())
 		return
 	}
@@ -486,7 +519,7 @@ func handleRecovery(w http.ResponseWriter, r *http.Request) {
 	err := writeAtomic(recConfigPath(), b, 0644)
 	recMu.Unlock()
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 		return
 	}
 	recMu.Lock()
@@ -524,4 +557,128 @@ func unexpectedForDashboard() *unexpectedRestart {
 	}
 	u := *recUnexp
 	return &u
+}
+
+// ---- the system log to another computer (the SC Box II, every build; off by default) ----
+//
+// The setting is one line, host:port, in syslog-remote next to the panel's other settings (a setting: committed to
+// the flash when written). The boot script (S48scbox2) reads it at every start and runs busybox syslogd again with
+// -R host:port -L, so the kernel's and every program's log lines (the tuner's breadcrumbs, trace.go, included) also
+// go to that computer over UDP as they are logged. Changing it here runs the boot script's "syslog" step at once.
+
+func syslogRemotePath() string { return filepath.Join(recDir(), "syslog-remote") }
+
+// syslogRemoteAvail: the setting is offered (Settings → Troubleshooting, the SC Box II only; not the SC Lite).
+func syslogRemoteAvail() bool { return model.Plan == planBox2V }
+
+// syslogRemoteApply: syslogd restarted for the setting now (the boot script's step; a variable for the tests).
+var syslogRemoteApply = func() error {
+	cmd := exec.Command("/bin/sh", "/etc/init.d/S48scbox2", "syslog")
+	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))
+	done := make(chan error, 1)
+	var out []byte
+	go func() {
+		var err error
+		out, err = cmd.CombinedOutput()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("restarting the system log failed (%v %s)", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	case <-time.After(20 * time.Second):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return fmt.Errorf("restarting the system log didn't finish within 20 s")
+	}
+}
+
+// syslogRemoteNorm: the setting as stored: "" (off) or ipv4:port (the port 1-65535, 514 when none is given). An
+// IPv4 address only, no host name: busybox syslogd looks a name up in its main loop, and a name server that doesn't
+// answer would then hold up /dev/log, so every program that logs.
+func syslogRemoteNorm(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	host, port := s, "514"
+	if i := strings.LastIndexByte(s, ':'); i >= 0 {
+		host, port = s[:i], s[i+1:]
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil || !a.Is4() || a.IsUnspecified() || a.IsMulticast() || a.String() != host {
+		return "", fmt.Errorf("enter the computer as an IPv4 address with an optional port, e.g. 192.168.1.20:514 (UDP; no host names); empty turns it off")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+		return "", fmt.Errorf("the port must be 1-65535 (syslog is 514)")
+	}
+	return host + ":" + port, nil
+}
+
+func syslogRemoteGet() string {
+	if !syslogRemoteAvail() {
+		return ""
+	}
+	b, err := os.ReadFile(syslogRemotePath())
+	if err != nil {
+		return ""
+	}
+	v, err := syslogRemoteNorm(strings.SplitN(string(b), "\n", 2)[0])
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// syslogRemoteMu: one change of the setting and its syslogd restart at a time (two overlapping restarts could
+// each start a syslogd; the boot script's step takes its own lock as well).
+var syslogRemoteMu sync.Mutex
+
+// syslogRemoteSet: store the setting and restart syslogd for it.
+func syslogRemoteSet(s string) error {
+	syslogRemoteMu.Lock()
+	defer syslogRemoteMu.Unlock()
+	if !syslogRemoteAvail() {
+		return fmt.Errorf("sending the system log to another computer isn't available in this build")
+	}
+	v, err := syslogRemoteNorm(s)
+	if err != nil {
+		return err
+	}
+	if v == "" {
+		if err := cfgRemove(syslogRemotePath()); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("could not turn it off: %s", cfgSaveErr(err))
+		}
+	} else if err := cfgWrite(syslogRemotePath(), []byte(v+"\n"), 0o644); err != nil {
+		return fmt.Errorf("could not save it: %s", cfgSaveErr(err))
+	}
+	if err := syslogRemoteApply(); err != nil {
+		syslogApplyErrSet(err.Error())
+		return fmt.Errorf("saved, but %v: the system log may not be sent as set (the boot script applies it again at the next start)", err)
+	}
+	syslogApplyErrSet("")
+	if v == "" {
+		activity.emit("📜 the system log is no longer sent to another computer")
+	} else {
+		activity.emit("📜 the system log is also sent to " + v + " (UDP syslog)")
+	}
+	return nil
+}
+
+// syslogApplyErr: the last restart of syslogd for the setting failed (shown on the card instead of "On"); "" = it
+// worked (or nothing was changed since the start).
+var (
+	syslogApplyMu  sync.Mutex
+	syslogApplyErr string
+)
+
+func syslogApplyErrSet(e string) { syslogApplyMu.Lock(); syslogApplyErr = e; syslogApplyMu.Unlock() }
+func syslogApplyErrGet() string {
+	syslogApplyMu.Lock()
+	defer syslogApplyMu.Unlock()
+	return syslogApplyErr
 }

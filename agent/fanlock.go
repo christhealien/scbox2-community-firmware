@@ -54,7 +54,16 @@ var (
 // fanLockStore: the lock's state on disk, else in memory.
 func fanLockStore(st fanLockState) {
 	b, _ := json.Marshal(st)
-	err := writeAtomic(fanLockPath(), b, 0o644)
+	var err error
+	if cfgShadow() {
+		// the RAM copy now (what the code reads), the flash in the background: a write window can wait for another
+		// one, and the Idle that follows must not
+		if err = os.WriteFile(fanLockPath(), b, 0o644); err == nil {
+			go func() { cfgPersist(fanLockPath()) }()
+		}
+	} else {
+		err = writeAtomic(fanLockPath(), b, 0o644)
+	}
 	fanLockMemMu.Lock()
 	if fanLockMem = nil; err != nil {
 		fanLockMem = &st
@@ -207,7 +216,7 @@ func fanUnlock(accepted bool, now time.Time) error {
 		}
 		return fmt.Errorf("%s watchdog still %s: a fan that reads 0 RPM isn't turning or its speed wire isn't connected; fans that turn but are flagged are slower than its figures, which Controls & fan → Fan check can fit to them (then reboot)", OemOf(), strings.TrimPrefix(w.Flagged, "the watchdog "))
 	}
-	if err := os.Remove(fanLockPath()); err != nil && fileExists(fanLockPath()) { // (no file: held in memory only)
+	if err := cfgRemove(fanLockPath()); err != nil && fileExists(fanLockPath()) { // (no file: held in memory only)
 		return err
 	}
 	fanLockMemMu.Lock()

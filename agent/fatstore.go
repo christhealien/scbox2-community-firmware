@@ -21,9 +21,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -68,6 +73,7 @@ func initConfigStore() {
 	root := filepath.Dir(*authFile)
 	configFAT = model.Plan == planBox2V || isFAT(root)
 	cleanStaleTmp(root)
+	cfgShadowStart() // the Box II: settings in RAM, the flash read-only (cfgshadow.go)
 }
 
 // cleanStaleTmp removes "*.tmp" files in dir: a power cut during a temp+rename write leaves one behind, and
@@ -151,10 +157,19 @@ func fsyncDir(dir string) {
 // crash-safe fatWrite (temp+fsync, .bak, rename, dir-fsync). Everywhere else it is the pre-port writeAtomic
 // (temp+fsync, rename), so SC Lite keeps the exact file it wrote before — only its crash-safety is unchanged.
 func cfgWrite(path string, b []byte, mode os.FileMode) error {
-	if configFAT {
-		return fatWrite(path, b, mode)
+	if err := cfgFault(path); err != nil {
+		return err
 	}
-	return writeAtomicPlain(path, b, mode)
+	var err error
+	if configFAT {
+		err = fatWrite(path, b, mode)
+	} else {
+		err = writeAtomicPlain(path, b, mode)
+	}
+	if err != nil {
+		return cfgNoteErr(path, err)
+	}
+	return cfgCommitWritten(path) // the Box II: the RAM copy onto the flash (cfgshadow.go)
 }
 
 // readConfig reads a panel config file, validating the bytes with ok(); if the primary file is missing or
@@ -182,4 +197,190 @@ func cfgCheckpointGap(onFAT, fast time.Duration) time.Duration {
 		return onFAT
 	}
 	return fast
+}
+
+// ===================== a config store that can't be written =====================
+//
+// After a power cut the Box II's FAT can come up damaged; the kernel then remounts it read-only (errors=remount-ro)
+// and every settings write fails with EROFS until a reboot (whose start-up check, scbox2-fatfix, repairs what is safe
+// to repair). Nothing that keeps the miner safe may depend on a write landing: the fan loop, the thermal guard and
+// every other guard run from the settings in memory, a write that fails is logged once and they go on. The
+// Dashboard says so (cfgStoreView), and a POST that couldn't save answers ok:false with the reason.
+
+var (
+	// cfgWriteFault: tests make config writes fail here (nil in the panel).
+	cfgWriteFault func(path string) error
+	cfgROSeen     atomic.Bool // a config write failed with EROFS since start
+	cfgFailLogged atomic.Bool
+	cfgLastErr    atomic.Value // string: the last config write error
+)
+
+func cfgFault(path string) error {
+	if cfgWriteFault == nil {
+		return nil
+	}
+	return cfgNoteErr(path, cfgWriteFault(path))
+}
+
+// cfgNoteErr: a config write's result. A failure is remembered (EROFS: the store is read-only) and logged once.
+func cfgNoteErr(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.EROFS) {
+		cfgROSeen.Store(true)
+	}
+	cfgLastErr.Store(err.Error())
+	if cfgFailLogged.CompareAndSwap(false, true) {
+		log.Printf("config store: a settings write failed (%s: %v): the panel keeps running on the settings in memory (logged once)", filepath.Base(path), err)
+	}
+	return err
+}
+
+// cfgSaveErr: the text a POST answers when its setting couldn't be written ("could not save: ..."), with the reason
+// in plain words when the store is read-only.
+func cfgSaveErr(err error) string {
+	if errors.Is(err, syscall.EROFS) || cfgStoreReadOnly() {
+		return "could not save: the settings storage is read-only (see the Dashboard): " + err.Error()
+	}
+	return "could not save: " + err.Error()
+}
+
+// cfgROProbe: the config dir's filesystem is mounted read-only (statfs ST_RDONLY). A variable for the tests.
+var cfgROProbe = func(dir string) bool {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return false
+	}
+	return int64(st.Flags)&1 != 0 // ST_RDONLY
+}
+
+var (
+	cfgROMu sync.Mutex
+	cfgROAt time.Time
+	cfgROv  bool
+)
+
+// cfgStoreReadOnly: the store is read-only now (statfs, at most every 10 s), or a write failed with EROFS.
+func cfgStoreReadOnly() bool {
+	if cfgROSeen.Load() {
+		return true
+	}
+	cfgROMu.Lock()
+	defer cfgROMu.Unlock()
+	if cfgROAt.IsZero() || time.Since(cfgROAt) > 10*time.Second {
+		cfgROv, cfgROAt = cfgROProbe(filepath.Dir(*authFile)), time.Now()
+	}
+	return cfgROv
+}
+
+// fanWriteFailing: the fan loop's last fan write failed (with the store read-only on the Box II: the OEM's backend
+// saves each plan, fans included, to that storage before it applies it, and gives up when it can't).
+var fanWriteFailing atomic.Bool
+
+// cfgTmp: where the boot scripts leave their notes about the settings storage (a variable for the tests).
+var cfgTmp = brandTmp
+
+func cfgRepairMarker() string { return cfgTmp + "cfg-repair" } // scbox2-fatfix: damage it wouldn't repair
+func cfgBrokenMarker() string { return cfgTmp + "cfg-broken" } // the boot scripts: not mounted / not writable
+func cfgFatfixLog() string    { return cfgTmp + "fatfix.log" } // scbox2-fatfix's report of this boot
+
+// cfgStoreState: the Dashboard's banner about the settings storage (nil = nothing to say).
+type cfgStoreState struct {
+	Kind string `json:"kind"` // "read_only", "damaged" (the start-up check refused a repair), "broken" (not mounted / not writable)
+	Msg  string `json:"msg"`
+	Fix  string `json:"fix"`
+}
+
+func readMarker(p string) string {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(b))
+	if i := strings.Index(s, ": "); i > 0 && !strings.Contains(s[:i], " ") && !strings.Contains(s[:i], "/") {
+		s = s[i+2:] // the writer's name ("scbox2: ", "S38initdir: ")
+	}
+	if len(s) > 600 {
+		s = s[:600] + "…"
+	}
+	return s
+}
+
+func cfgStoreView() *cfgStoreState {
+	box2 := model.Plan == planBox2V
+	reboot := "Reboot the miner (Settings → Restart & reboot)."
+	if box2 {
+		reboot = "Reboot the miner (Settings → Restart & reboot): at start-up it checks the settings storage and repairs what is safe to repair; your settings come back as they were last saved."
+	}
+	backup := "Export your settings (Settings → Firmware update → Settings backup) to keep a copy."
+	if box2 {
+		backup += " If this stays after a reboot, re-flash the firmware from an SD card (that formats the settings storage) and import them."
+	}
+	if ro := cfgStoreReadOnly(); ro || readMarker(cfgBrokenMarker()) != "" {
+		st := &cfgStoreState{Kind: "read_only"}
+		if !ro {
+			st.Kind = "broken"
+		}
+		st.Msg = "Settings can't be saved: the settings storage is read-only (after a power cut?). Mining keeps running on the settings you had, and the fan curve and the thermal guard keep running from memory."
+		if !ro {
+			st.Msg = "Settings can't be saved: " + readMarker(cfgBrokenMarker()) + ". Mining keeps running on the settings you had, and the fan curve and the thermal guard keep running from memory."
+		}
+		if box2 && cfgShadow() {
+			// v0.5.2: every program works on a copy of the settings in RAM; the storage is written only to save a
+			// setting, so nothing that runs the fans waits on it
+			if ro {
+				st.Msg = "Settings can't be saved: the settings storage is read-only and couldn't be made writable to save them (after a power cut?). Mining keeps running on the settings you had; what you changed since is in use until the next restart."
+			}
+			st.Msg += fmt.Sprintf(" The %s programs and the panel work on a copy of the settings in memory, so the fan curve and the thermal guard keep reaching the fans, and %s own %.0f °C cut-off stays on.", oemName()+"'s", oemPoss(), model.TempCutoffC)
+		} else if box2 {
+			st.Msg += fmt.Sprintf(" But %s backend saves every fan change to this storage before it applies it, so ", oemPoss())
+			if fanWriteFailing.Load() {
+				st.Msg += "fan changes are NOT reaching the fans now: they stay where they were."
+			} else {
+				st.Msg += "fan changes may not reach the fans: they would stay where they are."
+			}
+			st.Msg += fmt.Sprintf(" The thermal guard can still stop the boards, and %s own %.0f °C cut-off stays on.", oemPoss(), model.TempCutoffC)
+		}
+		st.Fix = reboot
+		if r := readMarker(cfgRepairMarker()); r != "" {
+			st.Msg += " " + r
+			st.Fix = backup
+		}
+		return st
+	}
+	if r := readMarker(cfgRepairMarker()); r != "" {
+		return &cfgStoreState{Kind: "damaged", Msg: r + " Saving works for now; the kernel makes the storage read-only the moment it trips over the damage.", Fix: backup}
+	}
+	return nil
+}
+
+// cfgStoreWatch: the banner's state as the Dashboard is built (every fan-loop reading): each new kind of trouble is
+// said once in the activity log and as a notification.
+var cfgStoreSaid sync.Map
+
+func cfgStoreWatch() *cfgStoreState {
+	st := cfgStoreView()
+	if st == nil {
+		return nil
+	}
+	if _, said := cfgStoreSaid.LoadOrStore(st.Kind, true); !said {
+		msg := st.Msg + " Fix: " + st.Fix
+		activity.emit("💾 " + msg)
+		go notifyAlways(evStorage, msg)
+	}
+	return st
+}
+
+// cfgStoreBoot: the start-up check's report of this boot, in the activity log when it repaired something.
+func cfgStoreBoot() {
+	b, err := os.ReadFile(cfgFatfixLog())
+	if err != nil {
+		return
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "fatfix: repair: ") && strings.Contains(string(b), "read back and verified") {
+			activity.emit("🧹 settings storage: the start-up check repaired it (" + strings.TrimPrefix(l, "fatfix: repair: ") + ")")
+		}
+	}
 }

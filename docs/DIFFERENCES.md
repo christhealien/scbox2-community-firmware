@@ -15,11 +15,11 @@ with the OEM's SC Box II driver), `xminerd` (watchdog) and `fanctrl` (fan contro
 | Miner API (`intminer`) | Reachable on the LAN, port 4028; allow-list `W:127.0.0.1,A:0/0` | **Loopback only** (127.0.0.1:4028); allow-list `127.0.0.1` only |
 | OEM cloud | MQTT client (remote pools, power, firmware, factory reset) and reports to the OEM's discovery host | **Removed**; the cloud host names are not left in what the miner runs |
 | UDP 1413 responder | An unauthenticated LAN broadcast sets the IP and DNS and reboots the miner | **Not started** |
-| Clock | Two modes: 690 MHz (Hashrate) and 525 MHz (Low-power) | **525–690 MHz**; the chips run in 12.5 MHz steps (690 runs at 687.5). Never above 690 MHz. |
+| Clock | Two modes: 690 MHz (Hashrate) and 525 MHz (Low-power) | **525–690 MHz**; the chips run in 12.5 MHz steps (690 runs at 687.5). Above 690 MHz only after the clock ceiling probe, up to this unit's clean result (750 MHz at most), at the stock voltage. |
 | Voltage | Fixed by the mode | **20 steps from 7.67 V (stock) down to 7.03 V**, shown in volts. Never above stock. |
 | Per-chip clocks | Every chip at the board clock | Optional **per-chip trims** and auto-trim, through a hooked copy of the miner and a small library |
 | Stop hashing | No idle mode in the stock plans | **Idle** from the panel, a schedule or a safety guard, with checks that the board stopped and cooled |
-| Power figures | None | **Watts and J/TH**: your wall-meter readings per setting, else the OEM's published figures for the two stock modes |
+| Power figures | None | **Watts and J/TH**: your wall-meter readings per setting, else an estimate from wall-meter readings on one unit (525–750 MHz, every voltage step) |
 | Fans | `fanctrl` | `fanctrl` stays. Optional **auto fan** with your own fan curves, and a **thermal guard** below the cut-off. |
 | Thermal cut-off | 86 °C | **86 °C, unchanged.** Never raised or weakened. |
 | Starting the miner | `xminerd` (on this board it does not start the miner) | The firmware's own launcher starts it once a pool exists, at every boot and if it exits. Only one miner can run at a time. |
@@ -33,13 +33,13 @@ with the OEM's SC Box II driver), `xminerd` (watchdog) and `fanctrl` (fan contro
 | mDNS | avahi | **Removed** |
 | Time | The OEM's China time zone (UTC+8); four NTP clients on hardcoded servers (two of them IP addresses in China) | China time (UTC+8) until a time zone is chosen in the panel (at first sign-in it takes your browser's); NTP from your servers and the router's (DHCP) together, `pool.ntp.org` last (can be switched off). Works offline: the clock can be set by hand in the panel. |
 | DNS | `minerd` writes `114.114.114.114` (a public DNS in China) when a static IP has none | Never written. Your DNS servers, or the router's, or the default gateway. |
-| Random seed | `/etc/random-seed`, the same file on every unit | Each miner keeps its own seed on its config partition |
+| Random seed | `/etc/random-seed`, the same file on every unit | Each miner keeps its own seed on its config partition (renewed at boot and at shutdown) |
 | Leftovers | An NFS script for a factory server, a lighttpd config, a factory Litecoin pool file with someone else's pools | **Removed** |
 | Hostname | Fixed | Set in the panel, applied at boot before the network starts |
 | MAC address | Set by the OEM's tool | Kept steady across boots, or random each boot, or a fixed one you choose |
 | Other coins | Other-coin miners shipped | Removed (this is a Blake2b / Siacoin miner) |
 | Firmware install | Web upload, RSA-signed images only, or SD card | **SD card** for the first install. Then **from the panel**: a release's `.ius` from GitHub or a file, checked against the release's `SHA256SUMS`, four confirmations and the panel password, written to the system partition only, read back, and the old system written back on error. |
-| Settings | The OEM config | Panel settings on the 3 MB config partition (`/mnt/config/scbox2`), with crash-safe writes. **Settings backup**: export and import as JSON (network, fan curves, presets, schedule, notifications; not pools, hostname, time settings or secrets) |
+| Settings | The OEM config, on the 3 MB config partition, written while the miner runs (the OEM's backend saves every fan step there) | The same partition and files, but **read-only while the miner runs**: every program works on a copy in RAM, and a setting is written only when you save it, in a short write window with a backup copy (crash-safe). Fan changes never touch the flash. The partition is checked at every boot before it is mounted, and power-cut damage that is safe to repair is repaired. **Settings backup**: export and import as JSON (network, fan curves, presets, schedule, notifications; not pools, hostname, time settings or secrets) |
 
 ## What stays the same
 
@@ -52,4 +52,4 @@ with the OEM's SC Box II driver), `xminerd` (watchdog) and `fanctrl` (fan contro
 
 ## Not in this release
 
-The clock ceiling probe, overclocking above 690 MHz and the auto-tuner are planned for a later release.
+The auto-tuner is planned for a later release.

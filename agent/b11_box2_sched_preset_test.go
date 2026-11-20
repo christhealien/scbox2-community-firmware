@@ -230,6 +230,7 @@ func TestB11Box2ScheduleSwitchesModesByIndex(t *testing.T) {
 //     (the scheduler then reports it and the guards fall back to the firmware cut-off).
 func TestB11Box2ScheduleIdleDegradesGracefully(t *testing.T) {
 	m := newB11Box2(t)
+	t.Cleanup(box2FansMaxRunning.Wait) // (the fans-to-100 % fall-back's write ends before this test's backend goes)
 	before := len(m.putsCopy())
 	err := applyPresetNameGen("Idle", noGen)
 	if err == nil {

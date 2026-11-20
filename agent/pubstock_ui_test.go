@@ -14,7 +14,7 @@ import (
 // the Box II profiles: the owner's build (commissioning on, features from it) and the public release's fixed set
 const (
 	pubModelOwner  = `{ok:true,id:'scbox2',name:'Box',plan:'box2v',commission:'x',features:{SoftIdle:true,PowerEstimate:true,ClockControl:true,VoltageControl:true,ChipTrims:true,FirmwareUpdate:true}}`
-	pubModelPublic = `{ok:true,id:'scbox2',name:'Box',plan:'box2v',public:true,commission:'x',features:{SoftIdle:true,PowerEstimate:true,ClockControl:true,VoltageControl:true,ChipTrims:true,FirmwareUpdate:true}}`
+	pubModelPublic = `{ok:true,id:'scbox2',name:'Box',plan:'box2v',public:true,commission:'x',features:{SoftIdle:true,PowerEstimate:true,ClockControl:true,VoltageControl:true,ChipTrims:true,CeilingProbe:true,OverclockUnlock:true,Tuner:true,FirmwareUpdate:true}}`
 )
 
 // pubBad: what a public user must never read
@@ -29,7 +29,7 @@ func pubCheckClean(t *testing.T, what, html string) {
 	}
 }
 
-var pubPresetFuncs = []string{"renderPresets", "pIsOn", "pTHS", "pFanProfiles", "pSpark", "pFanLine", "estW", "vLine", "calNote",
+var pubPresetFuncs = []string{"renderPresets", "pubNoTunerP", "pIsOn", "pTHS", "pFanProfiles", "pSpark", "pFanLine", "estW", "vLine", "calNote",
 	"fanUnit", "b2Name", "b2Stock", "chargeTxt", "B2T", "boxVoltsTxt"}
 
 // pubHesc: the page's hesc, and esc1 for names without quotes (l31Func's cut of either runs on into the code after it)
@@ -77,8 +77,10 @@ console.log('HTML '+$('pcards').innerHTML);`)
 		if !strings.Contains(out, "H3 Stock High|Stock Low|Quiet|☾ Idle\n") && !strings.Contains(out, "H3 High|Middle|Low|Lowest power|Stock High|Stock Low|Quiet|☾ Idle\n") {
 			t.Errorf("Box II preset cards (public %v): %s", pub, out)
 		}
-		if pub && !strings.Contains(out, "H3 Stock High|Stock Low|Quiet|☾ Idle\n") {
-			t.Errorf("public Box II: no empty tuner slots (no tuner): %s", out)
+		// v0.5.5: the Box II's tuner builds presets in both builds (the public release's Tuner is on, publicFeatures):
+		// the four tuner slots show, empty until built
+		if !strings.Contains(out, "H3 High|Middle|Low|Lowest power|Stock High|Stock Low|Quiet|☾ Idle\n") {
+			t.Errorf("Box II (public %v): the tuner's four slots should show: %s", pub, out)
 		}
 		for _, want := range []string{"ON1 Stock High / Stock High\n", "ON2 Stock High / Stock High\n", "ON3 Stock Low / Stock Low\n",
 			"The OEM’s factory setting for this miner", `onclick="presetApply('Hashrate')"`, `onclick="presetApply('Low-power')"`} {
@@ -210,8 +212,8 @@ renderPresets();V.presets=$('pcards').innerHTML;
 renderChipTrim({enabled:true,active:true,limits:{min:-50,max:50,step:12.5},geo:{chips:180,pairs:90,box2:true,fix:'lower the clock'},
  chains:[{chain:0,base:690,avg:100,chips:[{chip:1,trim:0,nonces:100,share:100},{chip:2,trim:-12.5,nonces:80,share:80,low:true}]}],watch:{on:true,status:'watching'},strong:{}});
 V.chiptrims=$('ctbody').innerHTML;
-renderPowerBox2({ok:true,calibrated:false,mains_v:230,watts:400,mhz:690,vcode:42,source:'spec',spec_tol_pct:5,
- specs:[{mode:'Hashrate',mhz:690,v:42,watts:400,ths:1.9},{mode:'Low-power',mhz:525,v:61,watts:260,ths:1.45}],cals:[]});
+renderPowerBox2({ok:true,calibrated:false,mains_v:230,watts:392,mhz:690,vcode:42,source:'measured',
+ points:[{mode:'Hashrate',mhz:690,v:42,watts:392,ths:1.97},{mode:'Low-power',mhz:525,v:61,watts:251.8,ths:1.51},{mode:'',mhz:700,v:42,watts:399.4,ths:2.01}],cals:[]});
 V.power=$('powerbody').innerHTML;
 ['p_intro','pfWarn','sc_hint','btnPresetBuild'].forEach(id=>{$(id).innerHTML=id==='sc_hint'?'The schedule switches between this miner’s presets (the High / Middle / Low / Lowest power the tuner built, your own from Presets, the firmware’s Stock plan, or Idle). Each change':'x';});
 pubNoTuner();V.static=$('p_intro').innerHTML+' | '+$('pfWarn').innerHTML+' | '+$('sc_hint').innerHTML;
@@ -242,8 +244,13 @@ for(const k in V)console.log('V_'+k+' '+String(V[k]).replace(/\n/g,' '));`)
 	if !strings.Contains(views["power"], "<td>Stock High</td>") || !strings.Contains(views["power"], "<td>Stock Low</td>") {
 		t.Errorf("Power table must name the stock modes Stock High / Stock Low: %s", views["power"])
 	}
-	if strings.Contains(views["chiptrims"], "Trim weak chips") || strings.Contains(views["static"], "tuner") || strings.Contains(views["static"], "the High") {
-		t.Errorf("public (no tuner): no pointer to the tuner: %s | %s", views["chiptrims"], views["static"])
+	// v0.5.5: the public Box II's tuner trims chips, so the Chip trims panel points at "Trim weak chips"; pubNoTuner (for
+	// a model whose public release has no tuner) still drops the pointers when it runs
+	if !strings.Contains(views["chiptrims"], "Trim weak chips") {
+		t.Errorf("public Box II: the Chip trims panel should point at the tuner's “Trim weak chips”: %s", views["chiptrims"])
+	}
+	if strings.Contains(views["static"], "tuner") || strings.Contains(views["static"], "the High") {
+		t.Errorf("pubNoTuner left a pointer to tuner presets: %s", views["static"])
 	}
 	if !strings.Contains(views["static"], "(Stock High, Stock Low, your own from Presets, or Idle)") {
 		t.Errorf("public schedule hint: %s", views["static"])
@@ -258,5 +265,65 @@ window._MODEL=`+pubModelOwner+`;
 console.log('NOTE '+featNoteHTML('The tuner'));renderModelBanner(window._MODEL);console.log('BANNER '+$('modelbanner').innerHTML);`)
 	if !strings.Contains(out, "until it has been tested") || !strings.Contains(out, "commissioning") {
 		t.Errorf("the owner's build lost its commissioning texts: %s", out)
+	}
+}
+
+// Controls → Clock & voltage on the Box II, in both builds: the clock ceiling probe and the overclock unlock appear
+// (the public release has no Commissioning section to switch them on from), each behind its own confirmation; with
+// no probe result the unlock is disabled and says why; with one, the unlock dialog states the limit and what was
+// measured, in volts; nothing names Commissioning or the tuner in the public build.
+func TestPublicBox2ProbeUnlockControls(t *testing.T) {
+	ownerOC := strings.Replace(pubModelOwner, "ChipTrims:true,", "ChipTrims:true,CeilingProbe:true,OverclockUnlock:true,", 1)
+	for _, mdl := range []string{ownerOC, pubModelPublic} {
+		out := l31Node(t, append([]string{"ocProbe", "ocUnlock", "ocDiscHTML", "b2OCDiscHTML"}, groomCtrlFuncs...), groomStubs+`
+window._MODEL=`+mdl+`;globalThis.toast=(m)=>console.log("TOAST "+m);globalThis.show=()=>{};
+CTRL=box2Ctrl(false);CTRL.box2.oc_limit=690;CTRL.box2.oc_hard_max=750;CTRL.box2.unlock_err='run the clock ceiling probe first';renderControl(CTRL);
+console.log('NOPROBE '+$('ctrlbody').innerHTML);ocUnlock();
+globalThis.confirm=m=>{console.log('CONFIRM '+m.replace(/\n/g,' '));return false;};ocProbe();
+CTRL=box2Ctrl(false);CTRL.box2.oc_limit=720;CTRL.box2.oc_hard_max=750;CTRL.box2.unlock_err='';
+CTRL.box2.probe={cap:720,fail_at:725,why:'hardware errors: board 0 at 23.77% in this step',volts:'7.67 V',at:'2026-11-01T10:00:00Z',limit:720};
+renderControl(CTRL);console.log('PROBED '+$('ctrlbody').innerHTML);
+ocUnlock();console.log('DIALOG '+$('ocbox').innerHTML);
+CTRL.overclock=true;CTRL.hardlimits.freq=[525,720];renderControl(CTRL);console.log('UNLOCKED '+$('ctrlbody').innerHTML);`)
+		pub := strings.Contains(mdl, "public:true")
+		noProbe, probed, dialog, unlocked := between(out, "NOPROBE ", "\n"), between(out, "PROBED ", "\n"), between(out, "DIALOG ", "\n"), between(out, "UNLOCKED ", "\n")
+		for _, want := range []string{`onclick="ocProbe()">📐 Probe the clock ceiling…`, `id="b2ulbtn" onclick="ocUnlock()" disabled`, "No unlock yet:</b> run the clock ceiling probe first"} {
+			if !strings.Contains(noProbe, want) {
+				t.Errorf("(public %v) no probe result: want %q in\n%s", pub, want, noProbe)
+			}
+		}
+		if !strings.Contains(out, "TOAST No unlock yet: run the clock ceiling probe first") || strings.Contains(between(out, "NOPROBE ", "CONFIRM"), "Unlock up to") {
+			t.Errorf("(public %v) the unlock must refuse without a probe result:\n%s", pub, out)
+		}
+		for _, want := range []string{"CONFIRM Probe the clock ceiling?", "700, 712.5, 725, 737.5, 750 MHz", "more than 1 % hardware errors", "460 W", "never above 750 MHz",
+			"On the first unit: 700 MHz gave about 2 % more hashrate for 2 % more power; above that, errors rose and efficiency got worse. Overclocking never improves efficiency; lowering clock/voltage does."} {
+			if !strings.Contains(out, want) {
+				t.Errorf("(public %v) the probe's confirmation lacks %q:\n%s", pub, want, out)
+			}
+		}
+		for _, want := range []string{"clean up to <b>720 MHz</b>, 725 MHz failed", "at 7.67 V", "unlocked up to 720 MHz", `onclick="ocUnlock()">🔓 Unlock clock limit…`} {
+			if !strings.Contains(probed, want) {
+				t.Errorf("(public %v) with a probe result: want %q in\n%s", pub, want, probed)
+			}
+		}
+		for _, want := range []string{"up to <b>720 MHz</b>", "at 7.67 V", "never goes above 750 MHz", "Unlock up to 720 MHz",
+			"On the first unit: 700 MHz gave about 2 % more hashrate for 2 % more power; above that, errors rose and efficiency got worse. Overclocking never improves efficiency; lowering clock/voltage does.",
+			"the OEM’s Stock High"} {
+			if !strings.Contains(dialog, want) {
+				t.Errorf("(public %v) the unlock dialog lacks %q:\n%s", pub, want, dialog)
+			}
+		}
+		if regexp.MustCompile(`level|\b42\b`).MatchString(pubText(dialog)) {
+			t.Errorf("(public %v) the unlock dialog speaks in levels, not volts:\n%s", pub, dialog)
+		}
+		if !strings.Contains(unlocked, "up to 720 MHz (what this unit’s probe held clean)") || !strings.Contains(unlocked, `onclick="ocRelock()"`) {
+			t.Errorf("(public %v) unlocked bar:\n%s", pub, unlocked)
+		}
+		if pub {
+			pubCheckClean(t, "Controls (probe/unlock)", out)
+			if strings.Contains(strings.ToLower(pubText(out)), "tuner") {
+				t.Errorf("public Controls point at the tuner:\n%s", out)
+			}
+		}
 	}
 }

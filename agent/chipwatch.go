@@ -159,12 +159,27 @@ func cwLoad() {
 		}
 	}
 	cwSt.Owned = keep
+	sig, _ := json.Marshal(cwSt.Owned) // (what the flash holds now, near enough: cwSave saves it again when it changes)
+	cwOwnedOnFlash = string(sig)
 }
 
 func cwSave() {
 	b, _ := json.MarshalIndent(cwSt, "", " ")
 	writeAtomic(chipWatchPath(), b, 0o644) // flushed before the rename: a power cut can't leave it empty
+	// (SC Box II, v0.5.5 T8) chipwatch.json stays in RAM (its counters change all the time, cfgHot), but which trims
+	// are auto-trim's (those it made, and the tuner's it took over) must survive a power cut: the trims file does,
+	// and without this record they would come back as hand trims. Saved to the flash when that list changes.
+	if cfgShadow() {
+		if sig, _ := json.Marshal(cwSt.Owned); string(sig) != cwOwnedOnFlash {
+			if cfgPersist(chipWatchPath()) == nil {
+				cwOwnedOnFlash = string(sig)
+			}
+		}
+	}
 }
+
+// cwOwnedOnFlash: auto-trim's list of its trims as last saved to the flash (cwSave).
+var cwOwnedOnFlash string
 
 func cwLog(msg string) {
 	cwSt.Log = append(cwSt.Log, map[string]any{"t": cwNow().Unix(), "msg": msg})

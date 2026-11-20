@@ -1,10 +1,9 @@
-//go:build !public
-
 package main
 
 // C6/C7 end to end on the REAL Box II writer (ceilMutate = mutatePlanGen → mutatePlanBox2, the read-back
-// confirmation included) against a fake stock stack (c34Fake: minerd + the miner API's devs), with the owner's
-// build ceiling box2OCHardMax (725 MHz). c67ceiling_test.go fakes the writer; this one doesn't.
+// confirmation included) against a fake stock stack (c34Fake: minerd + the miner API's devs), with the hard cap
+// box2OCHardMax (750 MHz, both builds) and this unit's probe result bounding the unlock. c67ceiling_test.go fakes
+// the writer; this one doesn't. (No build tag: the public release runs the same rule, TestPublicProbeUnlockRealWriter.)
 
 import (
 	"strings"
@@ -16,8 +15,8 @@ import (
 func c67RealSetup(t *testing.T) *c34Fake {
 	t.Helper()
 	f := newC34(t, true, false)
-	if model.OCHardMax != 725 {
-		t.Fatalf("the owner's build ceiling is %d, want 725", model.OCHardMax)
+	if model.OCHardMax != 750 {
+		t.Fatalf("the hard overclock cap is %d, want 750", model.OCHardMax)
 	}
 	model.Feat.CeilingProbe = true
 	setWindowsFromModel()
@@ -52,8 +51,9 @@ func c67RealSet(f *c34Fake, plan string) {
 	})
 }
 
-// C6: the probe (risk accepted, its window open) writes 700/710/720 and the 725 ceiling at level 42 through the
-// real writer and ends on Stock High; a 730 MHz write in its window is refused, so is 700 MHz at level 43.
+// C6: the probe (risk accepted, its window open) writes 700/720/725/740 and the 750 cap at level 42 (one request per
+// 12.5 MHz chip-grid point) through the real writer and ends on Stock High; a 760 MHz write in its window is
+// refused, so is 700 MHz at level 43. The result is saved for this unit.
 func TestC6ProbeRealWriterOwner(t *testing.T) {
 	f := c67RealSetup(t)
 	if r := l15Post(t, handleCeiling, "/api/ceiling", `{"start":true,"accept_risk":true}`); r["ok"] != true {
@@ -61,16 +61,19 @@ func TestC6ProbeRealWriterOwner(t *testing.T) {
 	}
 	st := l15WaitProbe(t)
 	box2AsyncConfirms.Wait()
-	if a := st.Axes[0]; a.State != "done" || a.Cap != 725 {
+	if a := st.Axes[0]; a.State != "done" || a.Cap != 750 {
 		t.Fatalf("result %+v; log:\n%s", a, strings.Join(st.Log, "\n"))
 	}
 	got := f.putPlans()
-	want := []string{"700 MHz 42 V 50 RPM 41 RPM", "710 MHz 42 V 50 RPM 41 RPM", "720 MHz 42 V 50 RPM 41 RPM", "725 MHz 42 V 50 RPM 41 RPM"}
+	want := []string{"700 MHz 42 V 50 RPM 41 RPM", "720 MHz 42 V 50 RPM 41 RPM", "725 MHz 42 V 50 RPM 41 RPM", "740 MHz 42 V 50 RPM 41 RPM", "750 MHz 42 V 50 RPM 41 RPM"}
 	if len(got) < len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
 		t.Fatalf("the probe wrote %q, want %q then Stock High", got, want)
 	}
 	if last := got[len(got)-1]; !strings.HasPrefix(last, "690 MHz 42 V") {
 		t.Fatalf("the probe ended on %q, not Stock High", last)
+	}
+	if r, ok := box2ProbeResult(); !ok || r.Cap != 750 || r.FailAt != 0 || box2ProbeLimit() != 750 {
+		t.Fatalf("saved result %+v (ok %v), limit %d", r, ok, box2ProbeLimit())
 	}
 
 	// in the probe's window (its charge, the risk accepted): the ceiling holds, the level stays 42
@@ -78,12 +81,12 @@ func TestC6ProbeRealWriterOwner(t *testing.T) {
 	setCharge("ceiling")
 	ceilRiskOK.Store(true)
 	gen := safetyGen.Load()
-	if _, err := ceilMutate(gen, func(p *powerplan) { p.FreqMHz = 725 }); err != nil {
-		t.Fatalf("725 MHz in the probe's window: %v", err)
+	if _, err := ceilMutate(gen, func(p *powerplan) { p.FreqMHz = 750 }); err != nil {
+		t.Fatalf("750 MHz in the probe's window: %v", err)
 	}
 	c67RealSet(f, "690 MHz 42 V 50 RPM 41 RPM")
-	if _, err := ceilMutate(gen, func(p *powerplan) { p.FreqMHz = 730 }); err == nil {
-		t.Fatal("BUG: 730 MHz written past the 725 MHz ceiling")
+	if _, err := ceilMutate(gen, func(p *powerplan) { p.FreqMHz = 760 }); err == nil {
+		t.Fatal("BUG: 760 MHz written past the 750 MHz cap")
 	}
 	if _, err := ceilMutate(gen, func(p *powerplan) { p.FreqMHz, p.VrunMv = 700, 43 }); err == nil {
 		t.Fatal("BUG: 700 MHz at level 43 written (above 690 the level stays 42)")
@@ -95,18 +98,22 @@ func TestC6ProbeRealWriterOwner(t *testing.T) {
 		t.Fatal("BUG: 700 MHz written with no probe running and no unlock")
 	}
 	for _, p := range f.putPlans() {
-		if pp, ok := parsePowerplanBox2(p); !ok || pp.FreqMHz > 725 || (pp.FreqMHz > 690 && pp.VrunMv != 42) {
+		if pp, ok := parsePowerplanBox2(p); !ok || pp.FreqMHz > 750 || (pp.FreqMHz > 690 && pp.VrunMv != 42) {
 			t.Fatalf("BUG: wrote %q", p)
 		}
 	}
 }
 
-// C7: with the unlock commissioned and accepted, Controls' override applies 712 MHz (level 42) through the real
-// writer; 726 MHz and 700 MHz at level 43 are refused; without override a clock above 690 is refused.
+// C7: with the unlock on, this unit's probe clean to 720 MHz and the unlock accepted, Controls' override applies
+// 712 MHz (level 42) through the real writer; 721 MHz (past the probe result) and 700 MHz at level 43 are refused;
+// without override a clock above 690 is refused.
 func TestC7UnlockRealWriterOwner(t *testing.T) {
 	f := c67RealSetup(t)
 	model.Feat.OverclockUnlock = true
 	setWindowsFromModel()
+	if err := box2SaveProbe(box2ProbeRecord{Cap: 720, FailAt: 725, Why: "hardware errors", Top: 750, Level: 42}); err != nil {
+		t.Fatal(err)
+	}
 	if r := c34Post(t, `{"freq_mhz":712,"confirm":true,"override":true}`); r["ok"] != false {
 		t.Fatalf("override before the risk is accepted: %v", r)
 	}
@@ -124,13 +131,13 @@ func TestC7UnlockRealWriterOwner(t *testing.T) {
 	}
 	n := len(f.putPlans())
 	c67RealSet(f, "690 MHz 42 V 50 RPM 41 RPM")
-	for _, body := range []string{`{"freq_mhz":726,"confirm":true,"override":true}`, `{"freq_mhz":700,"vrun_mv":43,"confirm":true,"override":true}`} {
+	for _, body := range []string{`{"freq_mhz":721,"confirm":true,"override":true}`, `{"freq_mhz":726,"confirm":true,"override":true}`, `{"freq_mhz":700,"vrun_mv":43,"confirm":true,"override":true}`} {
 		if r := c34Post(t, body); r["ok"] != false {
 			t.Fatalf("%s accepted: %v", body, r)
 		}
 	}
-	if _, err := mutatePlanGen(safetyGen.Load(), func(p *powerplan) { p.FreqMHz = 726 }); err == nil {
-		t.Fatal("BUG: the writer took 726 MHz")
+	if _, err := mutatePlanGen(safetyGen.Load(), func(p *powerplan) { p.FreqMHz = 721 }); err == nil {
+		t.Fatal("BUG: the writer took 721 MHz, past this unit's 720 MHz probe result")
 	}
 	if _, err := mutatePlanGen(safetyGen.Load(), func(p *powerplan) { p.FreqMHz, p.VrunMv = 700, 43 }); err == nil {
 		t.Fatal("BUG: the writer took 700 MHz at level 43")

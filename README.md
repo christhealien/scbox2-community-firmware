@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/christhealien/scbox2-community-firmware/releases/latest"><img alt="version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-e3b341?style=flat-square"></a>
+  <a href="https://github.com/christhealien/scbox2-community-firmware/releases/latest"><img alt="version 0.5.6" src="https://img.shields.io/badge/version-0.5.6-e3b341?style=flat-square"></a>
   <img alt="platform: SC Box II" src="https://img.shields.io/badge/platform-SC%20Box%20II-1f6feb?style=flat-square">
   <img alt="status: early release" src="https://img.shields.io/badge/status-early%20release-d29922?style=flat-square">
   <img alt="runs offline" src="https://img.shields.io/badge/runs-offline-8957e5?style=flat-square">
@@ -46,10 +46,12 @@
 <td width="50%" valign="top">
 
 #### ⚙️ Control
-- **Clock** 525–690 MHz, never above stock
+- **Clock** 525–690 MHz; above that only up to what this unit's own ceiling probe held clean (750 MHz at most)
 - **Voltage in volts:** 20 steps from 7.67 V (stock) down to 7.03 V
 - **Per-chip trims** (−100 to +50 MHz) and **auto-trim** for weak chips
 - **Presets** *Stock High* and *Stock Low*, plus your own, each with its own fan curve
+- **Auto-tuner:** maps clock and voltage, can **trim weak chips** instead of raising the voltage, and
+  **builds presets** High / Middle / Low / Lowest power, each tested with its own fan curve ([more](#auto-tuner))
 - **Stop hashing / Idle** from the panel, checked until the board has cooled
 
 </td>
@@ -58,7 +60,7 @@
 #### 📊 Monitoring
 - **Live dashboard** and a 24-hour hashrate chart
 - **All 36 chips** on one map, with weak chips flagged
-- **Power estimate** in W and J/TH, calibrated with your own plug-in meter
+- **Power estimate** in W and J/TH, from wall-meter readings on one unit, or exact with your own plug-in meter
 - **Rejected shares** with the pool's reason; HW-error **warm-up summary**
 - **Notifications** to Telegram, Discord, ntfy, Gotify or a webhook
 
@@ -92,7 +94,7 @@
 
 ## Quick start
 
-1. Download `scbox2-sd-v0.5.1.img.xz` and `SHA256SUMS` from the
+1. Download `scbox2-sd-v0.5.6.img.xz` and `SHA256SUMS` from the
    [latest release](https://github.com/christhealien/scbox2-community-firmware/releases/latest) and check the hash.
 2. Write the image to a microSD card with **balenaEtcher**.
 3. Power the miner off, insert the card, power it on. Wait about 4 minutes until only the blue SYS LED flashes,
@@ -108,23 +110,52 @@ Step by step, with first sign-in and recovery: **[docs/INSTALL.md](docs/INSTALL.
 > and import them afterwards; pools, hostname and time settings aren't in the file
 > ([what's included](docs/INSTALL.md#settings-backup)).
 
-## What's in v0.5.1
+## What's in v0.5.6
 
-| Feature | v0.5.1 |
+| Feature | v0.5.6 |
 |---|:---:|
 | Monitoring, pools and pool guard, notifications, schedule, logs, SSH, time | ✅ |
 | Stop hashing / Idle, with safety guards and scheduled Idle | ✅ |
-| Power estimate (W, J/TH), calibrated with your meter | ✅ |
+| Power estimate (W, J/TH): measured on one unit, exact with your own meter | ✅ |
 | Clock control, 525–690 MHz | ✅ |
 | Voltage control, 7.67 V → 7.03 V | ✅ |
 | Per-chip clock trims and auto-trim | ✅ |
+| A custom clock kept across reboots (fixed in v0.5.6) | ✅ |
 | Firmware update from the panel, checked and password-protected | ✅ |
 | Local-network-only access, HTTPS only, port switches | ✅ |
-| Clock ceiling probe | 🕓 later |
-| Overclock above 690 MHz | 🕓 later |
-| Auto-tuner | 🕓 later |
+| Clock ceiling probe: steps 700–750 MHz at 7.67 V, stops on heat, HW errors over 1 % (or 3× the board’s own rate at the start, whichever is higher; fewer than 10 new errors in a step are ignored), a chip drop-out or 460 W, back on 690 MHz | ✅ |
+| Overclock above 690 MHz, **per unit**: only after this unit's probe has a clean result, and only up to it (750 MHz at most; no result or a failed 700 MHz step: stays at 690) | ✅ |
+| Auto-tuner: map clock and voltage, confirm the best setting ([Auto-tuner](#auto-tuner)) | ✅ |
+| Auto-tuner: "Trim weak chips" and "Build presets" (High / Middle / Low / Lowest power) | ✅ tested on hardware (one unit) |
+
+Overclocking doesn't pay: on the first unit, 700 MHz gave about 2 % more hashrate for 2 % more power; above that,
+errors rose and efficiency got worse. It never improves efficiency; lowering clock/voltage does
+([measurements](docs/HARDWARE.md#measured-power-and-overclock)).
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
+
+## Auto-tuner
+
+*New in v0.5.5 (see [CHANGELOG.md](CHANGELOG.md)).* **Tuner** tab: the tuner tests one setting
+at a time against every chip's own error rate, measured first at Stock High, and goes back to what the miner ran
+before if anything goes wrong (heat, Stop, a power cut).
+
+- **Map every clock and voltage:** from your lowest clock up, each clock at the lowest voltage that stays clean,
+  then the best one runs again for longer (the confirm). The miner stays on it only if it holds.
+- **Trim weak chips:** when a test fails because of one or a few chips, those chips are slowed 12.5 MHz at a time
+  (at most 4 chips per board, each slowed by 25–75 MHz, 50 MHz by default) before the voltage goes up for the whole board. A trim stays only if the
+  test then passes; trims a run doesn't keep, and every trim after Stop or a safety stop, are put back. Kept trims
+  are in **Controls → Chip trims**.
+- **Build presets:** High, Middle, Low and Lowest power from the clean curve, each tested at its own temperature
+  (up to 74 °C) and saved with its own fan curve. Needs **Hold a steady temperature**. They appear in **Presets**
+  next to Stock High and Stock Low, with their power and hashrate; a schedule can use them.
+- Results are compared by hashrate, hardware errors and voltage. Watts are estimates from wall-meter readings on
+  one unit (or your own meter). A slowed chip saves power in step with the hashrate it gives up, so the gain from
+  trims is the lower voltage they allow.
+
+On the first unit the stock 690 MHz / 7.67 V was already the right setting at 690 MHz, and 675 MHz needed 7.55 V
+([tuner results](docs/HARDWARE.md#tuner-results-c8)). The weak chips there were a handful (b0.c26, c23, c25 …),
+which is what "Trim weak chips" is for. Run a **dry run** first: it reads the chips and writes nothing.
 
 ## Updating
 
@@ -146,9 +177,9 @@ flowchart LR
 
 | Release file | What it is for |
 |---|---|
-| `scbox2-firmware-v0.5.1.ius` | Update from the panel (keep the name: the panel looks for it) |
-| `scbox2-sd-v0.5.1.img.xz` | First install, or recovery, from a microSD card |
-| `scbox2-firmware-v0.5.1-source.tar.gz` | The source: panel, build kit, docs |
+| `scbox2-firmware-v0.5.6.ius` | Update from the panel (keep the name: the panel looks for it) |
+| `scbox2-sd-v0.5.6.img.xz` | First install, or recovery, from a microSD card |
+| `scbox2-firmware-v0.5.6-source.tar.gz` | The source: panel, build kit, docs |
 | `SHA256SUMS` | SHA-256 of the files above |
 
 ## How it works
@@ -191,8 +222,8 @@ flowchart LR
   checks and the hardcoded overseas DNS and time servers are removed or disabled. The stock programs answer on
   loopback only.
 - **By default the miner contacts only** your router (DHCP), time servers (yours and the router's, then
-  `pool.ntp.org`, which can be switched off) and DNS for their names. Pools, your DNS servers, notifications and
-  GitHub only when you set them up or ask for an update.
+  `pool.ntp.org`, which can be switched off) and DNS for their names. Pools, your DNS servers, notifications,
+  GitHub and the system-log relay to your computer only when you set them up or ask for an update.
 - **Runs fully offline** with a pool on your LAN. Set the clock by hand in **Settings → Time**.
 - **One password** for panel and SSH. 5 wrong tries block an address for 10 minutes.
 - An independent security review found **no critical or high-severity issues**; its medium findings are fixed in
@@ -204,7 +235,11 @@ In detail: **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 - **Warranty:** custom firmware may void your warranty. You use it at your own risk.
 - **Voltage never goes above stock.** 7.67 V is the most the panel sets; it offers only lower steps.
-- **The clock never goes above 690 MHz** (Stock High). Overclocking is not in this release.
+- **The clock stays at 690 MHz or below** (Stock High) unless you unlock it, and the unlock opens only up to what
+  this unit's own clock ceiling probe held clean, never above 750 MHz, always at the stock 7.67 V.
+- **The unlock trusts what is saved on the unit:** it opens up to the probe result saved there, and the probe's
+  460 W guard uses your own wall-meter reading for a setting when you have entered one (else the estimate). Anyone
+  with SSH access can change those files; if you do, that is your responsibility.
 - **The 86 °C hardware cut-off stays in charge** and is never raised; the panel's thermal guard acts before it.
 - **Keep the stock fans.** The fan control expects them; slower fans let the chips run hot.
 - **Back to stock is one SD flash away:** write the stock SC Box II image to a card the same way.
@@ -222,8 +257,8 @@ kit/tools/build-sshd-box2.sh agent out/scbox2-sshd     # the SSH server, its own
 
 # 2. the firmware (from kit/, as root)
 cd kit
-python3 build_box2.py --firmware <stock-scbox2>.ius --agent ../out/scbox2-agent --sshd ../out/scbox2-sshd --version 0.5.1 \
-  --out out/scbox2-firmware-v0.5.1.ius --img out/scbox2-sd-v0.5.1.img --xz --sums --require-startup-check
+python3 build_box2.py --firmware <stock-scbox2>.ius --agent ../out/scbox2-agent --sshd ../out/scbox2-sshd --version 0.5.6 \
+  --out out/scbox2-firmware-v0.5.6.ius --img out/scbox2-sd-v0.5.6.img --xz --sums --require-startup-check
 ```
 
 Every build is checked (leak scan, read-back, a start-up test inside the image) and reproducible: the same inputs
@@ -234,8 +269,10 @@ give the same bytes. Details: **[docs/BUILDING.md](docs/BUILDING.md)**.
 <details>
 <summary><b>Will this get more hashrate than stock?</b></summary>
 
-No. The clock never goes above the stock 690 MHz. What you get is control: lower clocks and voltages for less
-power and heat, per-chip trims, a schedule, and a much better view of the miner.
+Barely. Above 690 MHz you can only go as far as your unit's clock ceiling probe held clean (750 MHz at most). On
+the first unit, 700 MHz gave about 2 % more hashrate for 2 % more power, and higher clocks made more errors and
+were less efficient. What you get is control: lower clocks and voltages for less power and heat, per-chip trims,
+a schedule, and a much better view of the miner.
 </details>
 
 <details>
@@ -285,6 +322,16 @@ Yes. Flash the stock SC Box II image from a microSD card, the same way you insta
 </details>
 
 <details>
+<summary><b>The miner froze or restarted by itself. How do I find out why?</b></summary>
+
+Turn on **Settings → Troubleshooting → Send the system log to this computer** and run a small receiver on your
+computer (one Python command, given in the panel). Every system-log line then reaches your computer as it is
+logged, so the last lines before a freeze are kept. The log is sent unencrypted over your local network: point it
+only at your own computer. Step by step, and what to attach to a bug report:
+**[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
+</details>
+
+<details>
 <summary><b>Does it work on other miners?</b></summary>
 
 No. This firmware is for the SC Box II only. The SC Lite has its own community firmware by the same author.
@@ -294,7 +341,7 @@ No. This firmware is for the SC Box II only. The SC Lite has its own community f
 
 | Path | Contents |
 |---|---|
-| `docs/` | [Install](docs/INSTALL.md) · [Building](docs/BUILDING.md) · [Hardware](docs/HARDWARE.md) · [Differences from stock](docs/DIFFERENCES.md) · [Security](docs/SECURITY.md) |
+| `docs/` | [Install](docs/INSTALL.md) · [Building](docs/BUILDING.md) · [Hardware](docs/HARDWARE.md) · [Differences from stock](docs/DIFFERENCES.md) · [Security](docs/SECURITY.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) |
 | `agent/` | The panel's Go source (`scbox2-agent`) |
 | `kit/` | Build scripts that turn a stock `.ius` into this firmware |
 | `assets/` | Banner and screenshots |

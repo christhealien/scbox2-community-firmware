@@ -64,10 +64,10 @@ func box2VRange() (lo, hi int) {
 
 // box2ClockWindow: the clocks clock control may set: the profile's window, its top raised to the effective
 // ceiling clockWindowHi() (above FreqMax only while the ceiling probe runs (C6) or once the overclock unlock is
-// commissioned and accepted (C7)), and never past OCHardMax — so never above FreqMax in the public build (0).
+// commissioned and accepted (C7), up to this unit's probe result), and never past OCHardMax (750 MHz).
 func box2ClockWindow() (lo, hi int) {
 	hi = model.FreqMax
-	if w := clockWindowHi(); !publicBuild && w > hi && model.OCHardMax > hi {
+	if w := clockWindowHi(); w > hi && model.OCHardMax > hi {
 		hi = min(w, model.OCHardMax)
 	}
 	return model.FreqMin, hi
@@ -158,14 +158,86 @@ func box2PLLClock(mhz float64) float64 {
 var box2DevsCmd = func() ([]byte, error) { return cgminerCmd("devs") }
 
 // how long a clock/V write is given to show up in devs (minerd forwards it, the driver ramps 10 MHz per step),
-// and how often it is polled.
+// and how often it is polled. v0.5.4: devs is not asked at all for the first box2ConfirmQuiet after the write (the
+// driver ramps the clock in 10 MHz steps then, and heavy miner-API traffic during a ramp is the leading suspect for
+// the v0.5.3 kernel freeze), then every box2ConfirmPollSlow; box2ConfirmPoll / box2ConfirmFastFor only matter when
+// the quiet time is set to 0 (tests). The deadline (box2ConfirmWaitFor) is unchanged: only after it is a write
+// reverted.
+const box2ConfirmQuietDefault = 30 * time.Second
+
 var (
-	box2ConfirmWait = 45 * time.Second
-	box2ConfirmPoll = time.Second
+	box2ConfirmWait     = 45 * time.Second
+	box2ConfirmQuiet    = box2ConfirmQuietDefault
+	box2ConfirmPoll     = 2 * time.Second
+	box2ConfirmPollSlow = 5 * time.Second
+	box2ConfirmFastFor  = 20 * time.Second
 )
+
+// box2ConfirmPollAt: the pause before the next devs poll, elapsed into a confirmation: the rest of the quiet time
+// first, then every box2ConfirmPollSlow.
+func box2ConfirmPollAt(elapsed time.Duration) time.Duration {
+	if elapsed < box2ConfirmQuiet {
+		return box2ConfirmQuiet - elapsed
+	}
+	if (elapsed >= box2ConfirmFastFor || box2ConfirmQuiet > 0) && box2ConfirmPollSlow > box2ConfirmPoll {
+		return box2ConfirmPollSlow
+	}
+	return box2ConfirmPoll
+}
+
+// box2ConfirmWaitFor: the base wait plus a third of it for every 10 MHz the clock moves (the driver ramps 10 MHz
+// per step, and a bigger move restarts hashing for longer: on the first unit 690→650 MHz took longer than 45 s),
+// at most 4× the base.
+func box2ConfirmWaitFor(w box2Want) time.Duration {
+	d := w.MHz - w.Before.FreqMHz
+	if d < 0 {
+		d = -d
+	}
+	if w.Before.FreqMHz <= 0 {
+		d = 0
+	}
+	steps := (d + 9) / 10
+	wait := box2ConfirmWait + time.Duration(steps)*box2ConfirmWait/3
+	if max := 4 * box2ConfirmWait; wait > max {
+		wait = max
+	}
+	return wait
+}
 
 // box2WriteSeq counts clock/V writes: a confirmation only reverts the write it was started for.
 var box2WriteSeq atomic.Int64
+
+// box2ClockQuietNow: a clock/V change is being taken: its confirmation is running (box2ConfirmCoop, the tuner's,
+// Controls', a preset's, or the throttle's in the background), its quiet time (box2ConfirmQuiet) included. v0.5.5:
+// re-applying the chip trims (reapplyTrims' "pgaset clock") waits then, so the trims add no miner-API commands while
+// the driver ramps the clock (the v0.5.3 freeze). (Every clock/V write with clock control on is confirmed, and the
+// chip trims need clock control.) box2Writing covers the moments around it: a setting write on its way (its PUT
+// before its confirmation starts), and a background confirmation not yet started.
+func box2ClockQuietNow() bool {
+	return box2Confirming.Load() > 0 || box2Writing.Load() > 0 || time.Now().UnixNano() < box2QuietUntil.Load()
+}
+
+// box2QuietUntil / box2QuietFor (v0.5.5): a quiet time of its own after a setting write that has no confirmation
+// of its own to wait in: a failed confirmation's revert (the boards ramp back), the Idle's write, a whole-setting
+// write put back (putSettingGen). Auto-trim and the trim re-send wait it out like a confirmation.
+var (
+	box2QuietUntil atomic.Int64 // unix ns
+	box2WriteQuiet = 30 * time.Second
+)
+
+func box2QuietFor(d time.Duration) {
+	until := time.Now().Add(d).UnixNano()
+	for {
+		cur := box2QuietUntil.Load()
+		if cur >= until || box2QuietUntil.CompareAndSwap(cur, until) {
+			return
+		}
+	}
+}
+
+// box2Writing: SC Box II setting writes (mutatePlanBox2Co) in progress, from before the PUT until the confirmation
+// returns (for the throttle's background confirmation, until it ends).
+var box2Writing atomic.Int32
 
 // box2Want is one clock/V write awaiting confirmation.
 type box2Want struct {
@@ -179,10 +251,12 @@ type box2Want struct {
 // box2ReadBack: the clock/V every enabled board reports now. ok=false when the API can't be read or no
 // enabled board is listed.
 func box2ReadBack() (clocks, volts []float64, ok bool) {
+	at := time.Now()
 	raw, err := box2DevsCmd()
 	if err != nil {
 		return nil, nil, false
 	}
+	dashShareNoteDevs(raw, at) // (the poll is the shared Live reading's refresh too: dashshare.go)
 	devs, found := apiEntries(raw, "DEVS")
 	if !found {
 		return nil, nil, false
@@ -209,32 +283,105 @@ func box2Matches(w box2Want, clocks, volts []float64) bool {
 	return true
 }
 
+// box2Coop: what a writer that must keep working while its clock/V write is confirmed does meanwhile (the tuner:
+// box2Confirm can wait minutes, and the tuner must keep its heat abort, its fan hold and its Stop all that time).
+//   - stop runs about every second: an error ends the wait at once (the tuner's Stop);
+//   - tick runs every `every` (the tuner's poll): the temperature check and the fan hold; quiet is true inside the
+//     first box2ConfirmQuiet after the write. An error (the heat abort) ends the wait too.
+//
+// A wait ended this way reverts nothing itself and returns that error: the writer puts the miner back (the tuner's
+// end goes back to what the miner ran before, or its baseline, as after any abort).
+type box2Coop struct {
+	every time.Duration
+	stop  func() error
+	tick  func(quiet bool) error
+}
+
+// box2CoopPause: sleep d (from start's point of view: quiet while inside box2ConfirmQuiet), running co's stop about
+// every second and its tick every co.every. nil co: a plain sleep.
+func box2CoopPause(co *box2Coop, start time.Time, d time.Duration, lastTick *time.Time) error {
+	if co == nil {
+		time.Sleep(d)
+		return nil
+	}
+	every := co.every
+	if every <= 0 {
+		every = 10 * time.Second
+	}
+	end := time.Now().Add(d)
+	for {
+		left := time.Until(end)
+		if left <= 0 {
+			return nil
+		}
+		step := min(left, time.Second, every)
+		time.Sleep(step)
+		if co.stop != nil {
+			if err := co.stop(); err != nil {
+				return err
+			}
+		}
+		if co.tick != nil && time.Since(*lastTick) >= every {
+			*lastTick = time.Now()
+			if err := co.tick(time.Since(start) < box2ConfirmQuiet); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // box2Confirm polls devs until every enabled board reports the written clock and V. On a mismatch at the
 // deadline (or no API answer) it reverts to a stock plan and returns an error saying so. A newer clock/V
 // write since (another seq) cancels the revert: that write is confirmed on its own.
-func box2Confirm(w box2Want) error {
-	deadline := time.Now().Add(box2ConfirmWait)
+func box2Confirm(w box2Want) error { return box2ConfirmCoop(w, nil) }
+
+// box2ConfirmCoop: box2Confirm, with co's work done while it waits (nil: none). devs is first asked
+// box2ConfirmQuiet after the write. Meanwhile the Live readers share one reading (dashShareOn).
+func box2ConfirmCoop(w box2Want, co *box2Coop) error {
+	box2Confirming.Add(1) // every Dashboard reader shares one reading meanwhile (dashshare.go)
+	defer box2Confirming.Add(-1)
+	wait := box2ConfirmWaitFor(w)
+	start := time.Now()
+	deadline := start.Add(wait)
+	lastTick := start
+	traceNote("confirm #%d: waiting up to %s for %d MHz / level %d (from %d MHz / level %d)", w.Seq, wait, w.MHz, w.V, w.Before.FreqMHz, w.Before.VrunMv)
 	var clocks, volts []float64
+	polls := 0
+	ended := func(err error) error {
+		traceNote("confirm #%d: the writer ended the wait after %s (%d polls): %v", w.Seq, time.Since(start).Round(time.Second), polls, err)
+		return err
+	}
+	if q := min(box2ConfirmQuiet, wait); q > 0 { // the driver ramps: no miner-API poll yet
+		if err := box2CoopPause(co, start, q, &lastTick); err != nil {
+			return ended(err)
+		}
+	}
 	for {
 		var ok bool
 		clocks, volts, ok = box2ReadBack()
+		polls++
 		if ok && box2Matches(w, clocks, volts) {
+			traceNote("confirm #%d: confirmed after %s (%d polls)", w.Seq, time.Since(start).Round(time.Second), polls)
 			return nil
 		}
 		if box2WriteSeq.Load() != w.Seq {
+			traceNote("confirm #%d: superseded by a newer write after %d polls", w.Seq, polls)
 			return nil // superseded by a newer write
 		}
 		if time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(box2ConfirmPoll)
+		if err := box2CoopPause(co, start, box2ConfirmPollAt(time.Since(start)), &lastTick); err != nil {
+			return ended(err)
+		}
 	}
+	traceNote("confirm #%d: NOT confirmed after %s (%d polls, read back %v / %v): reverting", w.Seq, time.Since(start).Round(time.Second), polls, clocks, volts)
 	seen := "no answer from the miner API"
 	if len(clocks) > 0 {
 		seen = fmt.Sprintf("the miner reports %.1f MHz / %s", clocks[0], box2ReadText(volts[0]))
 	}
 	to, err := box2Revert(w)
-	msg := fmt.Sprintf("%d MHz / %s was not confirmed within %s (%s)", w.MHz, box2LevelText(w.V), box2ConfirmWait, seen)
+	msg := fmt.Sprintf("%d MHz / %s was not confirmed within %s (%s)", w.MHz, box2LevelText(w.V), wait.Round(time.Second), seen)
 	switch {
 	case err != nil:
 		msg += "; putting the stock plan back FAILED: " + err.Error()
@@ -320,9 +467,11 @@ func box2Revert(w box2Want) (string, error) {
 	cur["manual"] = true
 	cur["manualPowerplan"] = plan
 	body, _ := json.Marshal(cur)
+	box2QuietFor(box2WriteQuiet) // (F2: the boards ramp back: no trim re-send, no auto-trim devs/pgaset meanwhile)
 	if _, err := stockReq("PUT", "/mcb/setting", body); err != nil {
 		return "", err
 	}
+	box2QuietFor(box2WriteQuiet) // (from the PUT on)
 	box2WriteSeq.Add(1)
 	recordMark("P", "reverted to stock "+planShowRaw(plan))
 	return plan, nil
@@ -380,6 +529,9 @@ func box2ControlInfo() map[string]any {
 		"v_higher_is_less": model.VCodeDir == vcodeUpIsLess,
 		"v_rule":           box2VRuleText(),
 		"pll_note":         "the chips run floor(MHz ÷ 12.5) × 12.5 between 500 and 1487.5 MHz (690 → 687.5)",
+		// C6/C7: this unit's saved probe result, the most the unlock opens (box2ProbeLimit) and why it can't yet
+		"probe": box2ProbeView(), "oc_limit": box2ProbeLimit(), "unlock_err": box2UnlockErr(), "oc_hard_max": model.OCHardMax,
+		"probe_abort_c": ceilAbortBox2C(), "probe_min_errs": ceilHWMinErrs, // the probe's own limits, for its dialog
 	}
 }
 
@@ -400,6 +552,35 @@ func box2SavedPresets() []preset {
 		out = append(out, p)
 	}
 	return out
+}
+
+// box2OutsidePresets: the owner's saved clock presets that box2SavedPresets leaves out because today's clock window
+// or V rule refuses them (the window locked again lower, voltage control off): for the Presets tab to show, marked,
+// so they can be deleted. why: the rule's own words.
+func box2OutsidePresets() []map[string]any {
+	if model.Plan != planBox2V || !model.Feat.ClockControl {
+		return nil
+	}
+	var out []map[string]any
+	for _, p := range loadPresets() {
+		if p.MHz <= 0 || isBox2StockName(p.Name) {
+			continue
+		}
+		if err := box2CheckTuple(p.MHz, p.MV); err != nil {
+			out = append(out, map[string]any{"name": p.Name, "mhz": p.MHz, "mv": p.MV, "why": err.Error()})
+		}
+	}
+	return out
+}
+
+// box2OutsideWhy: why the saved preset of that name is outside the clock window now ("": it isn't, or no such preset).
+func box2OutsideWhy(name string) string {
+	for _, o := range box2OutsidePresets() {
+		if o["name"] == name {
+			return fmt.Sprint(o["why"])
+		}
+	}
+	return ""
 }
 
 // box2SavedPreset: the runnable saved preset of that name, or nil.
@@ -439,7 +620,22 @@ func box2PresetCheck(name string, mhz, v int) (int, error) {
 	if err := box2CheckTuple(mhz, v); err != nil {
 		return 0, err
 	}
+	if !box2OnClockGrid(mhz) { // (v0.5.5) as the tuner's clocks: one the chips run, as its smallest whole MHz
+		r := pll(float64(mhz))
+		return 0, fmt.Errorf("%d MHz runs %g MHz on the chips (they run 12.5 MHz steps): enter %d", mhz, r, int(math.Ceil(r-1e-9)))
+	}
 	return v, nil
+}
+
+// box2OnClockGrid: a clock as the panel writes it: a step of the chips' 12.5 MHz grid as its smallest whole MHz (600,
+// 613 for 612.5, 688 for 687.5), or one of the stock plans' clocks (690 runs 687.5).
+func box2OnClockGrid(mhz int) bool {
+	for _, t := range model.Box2Plans {
+		if t.FreqMHz == mhz {
+			return true
+		}
+	}
+	return mhz == int(math.Ceil(pll(float64(mhz))-1e-9))
 }
 
 // applyBox2PresetGen applies a saved clock preset on planBox2V (Presets tab, schedule): the same checks
@@ -453,6 +649,11 @@ func applyBox2PresetGen(name string, gen int64) error {
 	}
 	found := box2SavedPreset(name)
 	if found == nil {
+		for _, o := range box2OutsidePresets() { // (P6: a schedule rule on a preset the window no longer takes)
+			if o["name"] == name {
+				return fmt.Errorf("refused: the preset %q (%v MHz) is outside the current clock window (%v): edit or delete it on the Presets tab", name, o["mhz"], o["why"])
+			}
+		}
 		return fmt.Errorf("refused: %q is neither a stock mode nor a saved clock preset that can run on %s now", name, model.Name)
 	}
 	if err := plusTrimErr(found.MHz); err != nil {

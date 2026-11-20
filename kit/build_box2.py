@@ -3,7 +3,7 @@
 Build a flashable SC Box II firmware image with the scbox2-agent panel + hardening.
 
     SOURCE_DATE_EPOCH=<release date> python3 build_box2.py --firmware firmware.ius --agent scbox2-agent.arm \
-        --sshd scbox2-sshd.arm --version 0.5.0 --out rel/scbox2-firmware-v0.5.0.ius --img rel/scbox2-sd-v0.5.0.img \
+        --sshd scbox2-sshd.arm --fatfix scbox2-fatfix.arm --version 0.5.0 --out rel/scbox2-firmware-v0.5.0.ius --img rel/scbox2-sd-v0.5.0.img \
         --xz --sums --require-startup-check
 
     python3 build_box2.py --check rel/scbox2-sd-v0.5.0.img   # leak/naming gate only (no build)
@@ -38,9 +38,11 @@ Pipeline (each step is a named function so the review lanes can audit it):
      .ius byte for byte at 16 MiB.
   9. verify with ius.py the stock `upgrade`/uboot0 checks pass (oversize trap included).
  10. leak/naming gate (check_image) on the .ius AND the SD .img: any hit fails the build.
- 11. startup check: the SSH server and the panel FROM the read-back image tree, under qemu-arm, 5 runs, each in
-     its own mount/network/PID namespaces, chrooted in the image tree with tmpfs config/tmp dirs. scbox2-sshd
-     first: port 22 must answer with its SSH banner and key exchange. Then the panel (-ssh=false -lan80=false
+ 11. startup check: the settings-partition check, the SSH server and the panel FROM the read-back image tree,
+     under qemu-arm, 5 runs, each in its own mount/network/PID namespaces, chrooted in the image tree with tmpfs
+     config/tmp dirs. scbox2-fatfix first, on two small FAT32 test images: a power-cut one (dirty, FSInfo unwritten,
+     a lost chain) must be repaired and read back clean, a cross-linked one refused with nothing changed. Then
+     scbox2-sshd: port 22 must answer with its SSH banner and key exchange. Then the panel (-ssh=false -lan80=false
      -https443=false, on a free high port) must serve the page and open nothing more on 22/80/443. Then the panel
      binary is replaced by a crashing stub and the SSH server started afresh: port 22 must still answer. Skipped
      loudly when qemu/unshare/root are missing; --require-startup-check (releases) turns that skip into a failure.
@@ -327,10 +329,14 @@ def sh_ok(data):
 # Its size budget (stripped ARM): ~4.8 MiB today (x/crypto/ssh, sftp, pty, the Go runtime); more than this means
 # it linked something it shouldn't (the panel's code, net/http, ...).
 SSHD_MAX_BYTES = 6 * 1024 * 1024
+# The settings partition's start-up check (scbox2-fatfix, tools/build-fatfix-box2.sh): standard library only, ~1.8 MiB
+# stripped ARM today; more than this means it linked something it shouldn't.
+FATFIX_MAX_BYTES = 3 * 1024 * 1024
+FATFIX_VERSION = b"scbox2-fatfix 2"      # 2: also the settings write window (commit), v0.5.2
 
 
-def place_panel_and_helpers(t, agent_path, sshd_path):
-    print("step 4a: place panel + SSH server + kit helpers")
+def place_panel_and_helpers(t, agent_path, sshd_path, fatfix_path):
+    print("step 4a: place panel + SSH server + settings-partition check + kit helpers")
     agent = open(agent_path, "rb").read()
     if agent[:4] != b"\x7fELF" or agent[18] != 40:            # EM_ARM
         die("--agent is not an ARM ELF binary")
@@ -338,15 +344,24 @@ def place_panel_and_helpers(t, agent_path, sshd_path):
     if sshd[:4] != b"\x7fELF" or sshd[18] != 40:
         die("--sshd is not an ARM ELF binary")
     if len(sshd) > SSHD_MAX_BYTES:
-        die("--sshd is %d bytes, over its %d-byte budget: it must link only internal/sshcore + internal/authfile, "
+        die("--sshd is %d bytes, over its %d-byte budget: it must link only internal/sshcore, internal/authfile and "
+            "internal/cfgwin, "
             "never the panel (tools/build-sshd-box2.sh checks that)" % (len(sshd), SSHD_MAX_BYTES))
     if sshd.find(b"SSH-2.0-scbox2") < 0:
         die("--sshd is not scbox2-sshd (no SSH-2.0-scbox2 version string)")
+    fatfix = open(fatfix_path, "rb").read()
+    if fatfix[:4] != b"\x7fELF" or fatfix[18] != 40:
+        die("--fatfix is not an ARM ELF binary")
+    if len(fatfix) > FATFIX_MAX_BYTES:
+        die("--fatfix is %d bytes, over its %d-byte budget: it must link only the standard library "
+            "(tools/build-fatfix-box2.sh checks that)" % (len(fatfix), FATFIX_MAX_BYTES))
+    if fatfix.find(FATFIX_VERSION) < 0:
+        die("--fatfix is not scbox2-fatfix (no %r version string)" % FATFIX_VERSION.decode())
     # the panel (R03: /usr/bin fits the budget). 11 MB; with B-rec removals it leaves ~6.9 MB free (less the SSH
     # server below; guard_image keeps the hard floor).
     t.put("/usr/bin/scbox2-agent", agent, 0o755)
-    print("  /usr/bin/scbox2-agent %d bytes, /usr/bin/scbox2-sshd %d bytes (budget %d)"
-          % (len(agent), len(sshd), SSHD_MAX_BYTES))
+    print("  /usr/bin/scbox2-agent %d bytes, /usr/bin/scbox2-sshd %d bytes (budget %d), /usr/bin/scbox2-fatfix %d bytes "
+          "(budget %d)" % (len(agent), len(sshd), SSHD_MAX_BYTES, len(fatfix), FATFIX_MAX_BYTES))
 
     # the boot script (B8 owns its contents: files/S48scbox2)
     t.put_file(os.path.join(FILES, "S48scbox2"), "/etc/init.d/S48scbox2", 0o755)
@@ -359,6 +374,17 @@ def place_panel_and_helpers(t, agent_path, sshd_path):
     for p in ("/etc/init.d/S47scbox2-sshd", "/etc/init.d/S48scbox2"):
         if not sh_ok(t.read(p)):
             die("%s: shell syntax error" % p)
+
+    # the settings partition's check and repair, run by S38initdir before the mount (edit_box2_init.edit_s38initdir);
+    # also the settings write window ("scbox2-fatfix commit", internal/cfgwin)
+    t.put("/usr/bin/scbox2-fatfix", fatfix, 0o755)
+    # v0.5.2: the settings partition mounted read-only, every program on a RAM copy (cfgmount, run by S38initdir), and
+    # the boot scripts' way to save a file of it in a short write window (cfgwrite)
+    for src, dst in (("scbox2-cfgmount", "/usr/libexec/scbox2/cfgmount"), ("scbox2-cfgwrite", "/usr/libexec/scbox2/cfgwrite")):
+        if not t.put_file(os.path.join(FILES, src), dst, 0o755):
+            die("files/%s is missing: the settings partition would not be mounted" % src)
+        if not sh_ok(t.read(dst)):
+            die("%s: shell syntax error" % dst)
 
     # loopback-bind shim for minerd:80 / intminer:4028 (files/scbox2_bind.c; DESIGN)
     t.put_file(os.path.join(FILES, "scbox2_bind.so.bin"), "/lib/scbox2_bind.so", 0o755)
@@ -541,7 +567,8 @@ def edit_init_scripts(t, netcheck_name="scbox2"):
     # recovery; this serial-console password is documented in the hardware notes.
     edit_box2_init.apply(t, bind_path=bind, root_hash=edit_box2_init.RECOVERY_ROOT_HASH,  # $1$scbox2re$Q1YId9c5RLjHvWSUOalzX1
                          netcheck_name=netcheck_name)
-    for p in ("/etc/init.d/S20urandom", "/etc/init.d/S38initdir", "/etc/init.d/S40network", "/usr/libexec/scbox2/seed"):
+    for p in ("/etc/init.d/S20urandom", "/etc/init.d/S38initdir", "/etc/init.d/S40network", "/usr/libexec/scbox2/seed",
+              "/etc/scbox2-mac"):
         if not sh_ok(t.read(p)):
             die("%s: shell syntax error after the edits" % p)
 # ================================================================ step 4d: removals (R03 B-rec; owned here)
@@ -703,11 +730,13 @@ def find_qemu():
 
 
 def startup_check(root, skip, require, runs=STARTUP_RUNS):
-    """Start the SSH server and the panel FROM the image (root = the read-back tree of the final .ius, so its own
-    /usr/bin/scbox2-sshd and /usr/bin/scbox2-agent) under qemu-arm, `runs` times. Each run: unshare -m -n -p -f
+    """Start the settings-partition check, the SSH server and the panel FROM the image (root = the read-back tree of
+    the final .ius, so its own /usr/bin/scbox2-fatfix, /usr/bin/scbox2-sshd and /usr/bin/scbox2-agent) under
+    qemu-arm, `runs` times. Each run: unshare -m -n -p -f
     (own mount, network and PID namespaces: nothing it binds is reachable from or on the build host, and it ends
     with the run), chroot in the image tree, tmpfs on /tmp, /mnt (the /usr/config -> /mnt/config target) and /dev
-    (null/zero/random/urandom only), settings under a temp dir. Each run: scbox2-sshd must answer on port 22 with
+    (null/zero/random/urandom only), settings under a temp dir. Each run: scbox2-fatfix must repair a power-cut test
+    image and refuse a cross-linked one untouched (fatfix_check); scbox2-sshd must answer on port 22 with
     its SSH banner and key exchange; the panel (-ssh=false -lan80=false -https443=false, a free high port) must
     serve its page, stay up 2 s more, and open nothing on 22/80/443 (beyond the SSH server's and the by-design
     127.0.0.2:80 net-check responder, STARTUP_ALLOWED_LISTEN; all of it inside the run's namespace); then, with
@@ -735,6 +764,8 @@ def startup_check(root, skip, require, runs=STARTUP_RUNS):
         die("startup check: the image has no /usr/bin/scbox2-agent")
     if not os.path.exists(os.path.join(root, "usr", "bin", "scbox2-sshd")):
         die("startup check: the image has no /usr/bin/scbox2-sshd")
+    if not os.path.exists(os.path.join(root, "usr", "bin", "scbox2-fatfix")):
+        die("startup check: the image has no /usr/bin/scbox2-fatfix")
     shutil.copy(qemu, os.path.join(root, ".scbox2-qemu-arm"))
     env = {k: v for k, v in os.environ.items() if k not in ("TZ", "http_proxy", "https_proxy", "HTTP_PROXY",
                                                             "HTTPS_PROXY", "no_proxy", "NO_PROXY")}
@@ -752,9 +783,271 @@ def startup_check(root, skip, require, runs=STARTUP_RUNS):
                 % (i + 1, runs, out[-3000:]))
         print("  run %d/%d: %s" % (i + 1, runs, out.strip().splitlines()[-1] if out.strip() else "ok"))
     os.unlink(os.path.join(root, ".scbox2-qemu-arm"))
-    print("  the SSH server and the panel from the image started %d of %d times under qemu-arm (isolated): port 22 "
+    print("  the settings-partition check, the SSH server and the panel from the image ran %d of %d times under "
+          "qemu-arm (isolated): the check repaired a power-cut FAT32 and refused a cross-linked one, port 22 "
           "answered SSH (also with the panel replaced by a crashing stub) and the panel served its page" % (runs, runs))
+    shadow_check(root, qemu, env, require)
     return True
+
+
+# ---- the settings in RAM, the partition read-only (v0.5.2) ----
+def shadow_check(root, qemu, env, require):
+    """The image's own boot step (/usr/libexec/scbox2/cfgmount), the OEM's backend (the patched /usr/bin/minerd) and
+    the panel, together, under qemu-arm, in a user namespace with its own binfmt_misc (so the OEM's programs and the
+    shell scripts can start other ARM programs, as on the miner; nothing is registered on the build host). The
+    "settings partition" is a tmpfs standing in for /dev/spiblock2 (the build host has no FAT driver, and a user
+    namespace can't mount a block device), mounted the way cfgmount mounts the real one, read-only; its bytes are
+    hashed before and after. It proves: the partition is read-only after the boot step and every program works on the
+    RAM copy; the boot step's first-boot save lands; the OEM's backend takes fan changes into RAM while the partition
+    stays byte for byte the same and no write window opens; with its settings folder read-only the patched backend
+    still takes the plan (answers 200); a panel save (the first password change) opens a window, lands, and leaves the
+    partition read-only. Needs Linux 6.7+ (binfmt_misc in a user namespace): skipped loudly otherwise, a failure with
+    --require-startup-check."""
+    eh = tempfile.mkdtemp(prefix="box2-binfmt-", dir=os.environ.get("BOX2_WORK"))
+    try:
+        # the interpreter is named "eventhub": the OEM's backend refuses to start unless its event hub runs (it looks for
+        # a process whose argv[0] is "eventhub" in /proc/*/cmdline); every ARM program here shows the interpreter's
+        # name as argv[0]
+        shutil.copy(qemu, os.path.join(eh, "eventhub"))
+        try:
+            r = subprocess.run(["unshare", "-U", "-r", "-m", "-n", "-p", "-f", "--mount-proc", "--propagation", "private",
+                                sys.executable, "-I", os.path.abspath(__file__), "--shadow-run", root,
+                                os.path.join(eh, "eventhub")],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+            out, rc = r.stdout.decode("latin-1", "replace"), r.returncode
+        except subprocess.TimeoutExpired as e:
+            out, rc = (e.stdout or b"").decode("latin-1", "replace") + "\n(timed out)", -1
+    finally:
+        shutil.rmtree(eh, ignore_errors=True)
+    if rc == 3:
+        msg = "the settings-in-RAM check needs binfmt_misc in a user namespace (Linux 6.7+): " + out.strip()[-300:]
+        if require:
+            die(msg + " (--require-startup-check)")
+        print("  WARNING: SKIPPED: " + msg)
+        return False
+    if rc != 0:
+        die("startup check FAILED: the settings in RAM / the read-only partition (cfgmount, the OEM's backend, the "
+            "panel's write window):\n%s" % out[-5000:])
+    print("  " + (out.strip().splitlines()[-1] if out.strip() else "settings in RAM: ok"))
+    return True
+
+
+def tree_hash(d):
+    """sha256 over every file under d (name and bytes), and the list of names: the "partition" byte for byte."""
+    h, names = hashlib.sha256(), []
+    for base, dns, fns in os.walk(d):
+        dns.sort()
+        for n in sorted(fns):
+            p = os.path.join(base, n)
+            rel = os.path.relpath(p, d)
+            names.append(rel)
+            h.update(rel.encode() + b"\0" + open(p, "rb").read() + b"\0")
+    return h.hexdigest(), names
+
+
+def mounts_of(path):
+    """The /proc/mounts line (fields) for the mount point path, or None."""
+    for l in open("/proc/mounts").read().splitlines():
+        f = l.split()
+        if len(f) >= 4 and f[1] == path:
+            return f
+    return None
+
+
+def shadow_run(root, interp):
+    """One run of shadow_check, inside unshare -U -r -m -n -p -f --mount-proc. Exit 0 = every step held; 3 = no
+    binfmt_misc in a user namespace here; else 1 with what went wrong."""
+    import fcntl, json as _json, socket, urllib.request, urllib.parse
+    say = lambda m: print(m, flush=True)
+    try:
+        subprocess.run(["mount", "-t", "binfmt_misc", "binfmt_misc", "/proc/sys/fs/binfmt_misc"], check=True,
+                       capture_output=True)
+        # registered by its bare name (F: opened now, from its folder): an ARM program's argv[0] is then "eventhub"
+        # for the OEM's /proc check, as on the miner
+        os.chdir(os.path.dirname(interp))
+        with open("/proc/sys/fs/binfmt_misc/register", "wb") as f:
+            f.write(b":qemu-arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:"
+                    b"\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:" +
+                    os.path.basename(interp).encode() + b":F")
+        os.chdir("/")
+    except Exception as e:
+        say("binfmt_misc: %s" % e)
+        sys.exit(3)
+    s = socket.socket()
+    flags = struct.unpack("16sH", fcntl.ioctl(s, 0x8913, struct.pack("16sH", b"lo", 0))[:18])[1]
+    fcntl.ioctl(s, 0x8914, struct.pack("16sH", b"lo", flags | 1))
+    s.close()
+    R = lambda p: os.path.join(root, p.lstrip("/"))
+    subprocess.run(["mount", "-t", "proc", "proc", R("/proc")], check=True)
+    for d in ("dev", "tmp", "mnt"):
+        subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=1777", "box2check", R(d)], check=True)
+    for n in ("null", "zero", "random", "urandom"):
+        open(R("/dev/" + n), "w").close()
+        subprocess.run(["mount", "--bind", "/dev/" + n, R("/dev/" + n)], check=True)
+    os.makedirs(R("/dev/shm"))
+    bad = []
+
+    def fail(m):
+        say("FAILED: " + m)
+        bad.append(m)
+
+    # the stand-in partition, as a unit's after the OEM's first start: its settings, the miner's config, a panel file
+    dev = R("/tmp/spiblock2")
+    os.makedirs(dev)
+    subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=0700", "spiblock2", dev], check=True)
+    os.makedirs(os.path.join(dev, "minerd", "settings"))
+    os.makedirs(os.path.join(dev, "bfgminer"))
+    os.makedirs(os.path.join(dev, "scbox2"))
+    for n in os.listdir(R("/root/settings")):
+        if n != "qomo.json":
+            shutil.copy(R("/root/settings/" + n), os.path.join(dev, "minerd", "settings", n))
+    shutil.copy(R("/root/bfgminer.json"), os.path.join(dev, "bfgminer", "bfgminer.json"))
+    open(os.path.join(dev, "scbox2", "keep.txt"), "w").write("from the partition\n")
+    for base, dns, fns in os.walk(dev):
+        for n in dns + fns:
+            os.chmod(os.path.join(base, n), 0o700 if n in dns else 0o600)
+    # 1. the boot step, from the image (as S38initdir runs it)
+    benv = dict(os.environ, SCBOX2_CFGDEV="/tmp/spiblock2", SCBOX2_CFGFS="none", SCBOX2_CFGOPTS="bind",
+                PATH="/usr/sbin:/usr/bin:/sbin:/bin")
+    r = subprocess.run(["chroot", root, "/bin/sh", "/usr/libexec/scbox2/cfgmount"], env=benv,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    bootout = r.stdout.decode("latin-1", "replace")
+    fm, rm = mounts_of(R("/mnt/cfgflash")), mounts_of(R("/mnt/config"))
+    if r.returncode != 0 or not fm or "ro" not in fm[3].split(",") or not rm or rm[2] != "tmpfs":
+        fail("after the boot step: partition %s, settings %s (exit %d):\n%s" % (fm, rm, r.returncode, bootout))
+        sys.exit(1)
+    if open(R("/mnt/config/scbox2/keep.txt")).read() != "from the partition\n":
+        fail("the RAM copy doesn't hold the partition's files")
+    if not os.path.isfile(os.path.join(dev, "etc", "network", "interfaces")):
+        fail("the first-boot step's file (etc/network/interfaces) didn't land on the partition:\n" + bootout)
+    seen = ["partition read-only, settings in RAM after the boot step, its first-boot save landed"]
+    procs = []
+    try:
+        # 2. the OEM's event hub and backend (the patched one from the image), its settings in RAM
+        eh = subprocess.Popen(["chroot", root, "/usr/bin/eventhub"], env=benv, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
+        procs.append(eh)
+        time.sleep(3)
+        md = subprocess.Popen(["chroot", root, "/usr/bin/minerd"], env=benv, stdout=open(R("/tmp/minerd.out"), "wb"),
+                              stderr=subprocess.STDOUT)
+        procs.append(md)
+        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        up = False
+        for i in range(240):
+            try:
+                socket.create_connection(("127.0.0.1", 80), 1).close()
+                up = True
+                break
+            except OSError:
+                time.sleep(0.5)
+        if not up:
+            fail("the OEM's backend didn't answer on :80:\n" + open(R("/tmp/minerd.out"), "rb").read()[-1500:].decode("latin-1"))
+            sys.exit(1)
+        # 3. the panel, from the image, its settings where the image puts them (/usr/config/scbox2 -> RAM)
+        with socket.socket() as ps:
+            ps.bind(("127.0.0.1", 0))
+            port = ps.getsockname()[1]
+        pl = subprocess.Popen(["chroot", root, "/usr/bin/scbox2-agent", "-listen", "127.0.0.1:%d" % port, "-ssh=false",
+                               "-lan80=false", "-https443=false", "-log", "/dev/null"], env=benv,
+                              stdout=open(R("/tmp/panel.out"), "wb"), stderr=subprocess.STDOUT)
+        procs.append(pl)
+        panel_log = lambda: open(R("/tmp/panel.out"), "rb").read().decode("latin-1", "replace")
+        end = time.time() + 120
+        while time.time() < end and not os.path.isfile(os.path.join(dev, "scbox2", "auth.json")):
+            time.sleep(1)
+        if not os.path.isfile(os.path.join(dev, "scbox2", "auth.json")):
+            fail("the panel's first login file didn't reach the partition:\n" + panel_log()[-2000:])
+            sys.exit(1)
+        # its start-up saves (the login file, the first plan) done: the partition stays the same for 10 s
+        last, still, end = None, 0, time.time() + 150
+        while time.time() < end and still < 10:
+            h = tree_hash(dev)[0]
+            still = still + 1 if h == last else 0
+            last = h
+            time.sleep(1)
+        seen.append("the panel's first login file saved")
+        # 4. fan changes through the OEM's backend (as the fan curve sends them)
+        def enc(pw):
+            data = pw.encode() + b"\0" * ((16 - len(pw) % 16) % 16)
+            o = subprocess.run(["openssl", "enc", "-aes-128-cbc", "-K", "21" * 16, "-iv", "00" * 16, "-nopad"],
+                               input=data, capture_output=True)
+            return o.stdout.hex()
+        q = urllib.parse.urlencode({"username": "admin", "password": enc("123456789"), "cipher": "true"})
+        tok = _json.loads(op.open("http://127.0.0.1:80/user/login?" + q, timeout=30).read()).get("JWT Token")
+        hdr = {"Authorization": "Bearer %s" % tok, "Content-Type": "application/json"}
+        # the body: the backend's own settings file, as GET /mcb/setting returns it (that GET needs the boards)
+        cur = _json.load(open(R("/mnt/config/minerd/settings/cpbsetting.json")))
+        before, names = tree_hash(dev)
+        windows0 = panel_log().count("config window: rw")
+        info = cur.get("manualPowerplan") or "690 MHz 42 V 50 RPM 41 RPM"
+        m = re.match(r"(.*?)([0-9]+) RPM (.*)$", info)
+        codes = []
+        for fan in (55, 70, 85, 100, 60):
+            cur["manual"], cur["manualPowerplan"] = True, "%s%d RPM %s" % (m.group(1), fan, m.group(3))
+            try:
+                codes.append(op.open(urllib.request.Request("http://127.0.0.1:80/mcb/setting",
+                                                            data=_json.dumps(cur).encode(), method="PUT", headers=hdr),
+                                     timeout=60).status)
+            except urllib.error.HTTPError as e:
+                codes.append(e.code)
+            ram = open(R("/mnt/config/minerd/settings/cpbsetting.json")).read()
+            if "%d RPM" % fan not in ram:
+                fail("fan %d %%: not in the RAM copy of the OEM's settings file" % fan)
+        after, _ = tree_hash(dev)
+        if codes != [200] * 5:
+            fail("the OEM's backend answered the fan changes with %s" % codes)
+        if after != before:
+            fail("the partition changed while only the fans changed")
+        if panel_log().count("config window: rw") != windows0:
+            fail("a write window opened while only the fans changed")
+        fm = mounts_of(R("/mnt/cfgflash"))
+        if not fm or "ro" not in fm[3].split(","):
+            fail("the partition isn't read-only after the fan changes: %s" % fm)
+        seen.append("5 fan changes answered 200, in RAM, the partition byte for byte the same (sha256 %s, %d files), "
+                    "no window" % (before[:12], len(names)))
+        # 5. the patched backend with its settings folder read-only: the plan still goes through
+        subprocess.run(["mount", "-o", "remount,ro", R("/mnt/config")], check=True)
+        cur["manualPowerplan"] = "%s%d RPM %s" % (m.group(1), 75, m.group(3))
+        try:
+            code = op.open(urllib.request.Request("http://127.0.0.1:80/mcb/setting", data=_json.dumps(cur).encode(),
+                                                  method="PUT", headers=hdr), timeout=60).status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        subprocess.run(["mount", "-o", "remount,rw", R("/mnt/config")], check=True)
+        if code != 200:
+            fail("with its settings read-only the OEM's backend answered %s (the patch that keeps a failed save from "
+                 "dropping the plan didn't hold)" % code)
+        seen.append("with its settings folder read-only the patched backend still took the plan (200)")
+        # 6. a panel save: the first password change
+        base = "http://127.0.0.1:%d" % port
+        ph = {"Content-Type": "application/json", "Origin": base}
+        cj = urllib.request.HTTPCookieProcessor()
+        po = urllib.request.build_opener(urllib.request.ProxyHandler({}), cj)
+        po.open(urllib.request.Request(base + "/api/login", data=b'{"Username":"admin","Password":"admin"}', headers=ph),
+                timeout=120).read()
+        auth_before = open(os.path.join(dev, "scbox2", "auth.json"), "rb").read()
+        res = _json.loads(po.open(urllib.request.Request(base + "/api/passwd", data=b'{"New":"box2-check-pw-1"}',
+                                                         headers=ph), timeout=300).read())
+        auth_after = open(os.path.join(dev, "scbox2", "auth.json"), "rb").read()
+        fm = mounts_of(R("/mnt/cfgflash"))
+        if not res.get("ok"):
+            fail("the password change answered %s" % res)
+        if auth_after == auth_before or auth_after != open(R("/mnt/config/scbox2/auth.json"), "rb").read():
+            fail("the new login file didn't land on the partition")
+        if not fm or "ro" not in fm[3].split(","):
+            fail("the partition isn't read-only after the save: %s" % fm)
+        if panel_log().count("config window: rw") <= windows0:
+            fail("no write window was logged for the save:\n" + panel_log()[-2000:])
+        seen.append("a panel save opened a window (rw, written, synced, ro), the file landed, read-only again")
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+    if bad:
+        sys.stdout.write("---- panel log\n" + open(R("/tmp/panel.out"), "rb").read()[-3000:].decode("latin-1", "replace"))
+        sys.exit(1)
+    say("settings in RAM: " + "; ".join(seen))
+    sys.exit(0)
 
 
 def _listening():
@@ -813,6 +1106,128 @@ def start_sshd(root, cfg):
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
+# ---- the settings partition's check (scbox2-fatfix), run from the image against small FAT32 test images ----
+def fat32_test_image(case):
+    """A FAT32 image laid out as the miner's factory config partition (512-byte sectors and clusters, 6 reserved
+    sectors, FSInfo at 1, backup boot sector at 3, two FATs, a lowercase label), with one 2-cluster file A.TXT in
+    the root. case "powercut": dirty, FSInfo sector unwritten (0xFF), a lost 2-cluster chain; case "crosslinked":
+    dirty, and a second file B.TXT sharing A.TXT's last cluster. Returns (image bytes, facts)."""
+    bps, rsv, total, fsz = 512, 6, 6144, 48
+    data = rsv + 2 * fsz
+    maxc = total - data + 1
+    b = bytearray(total * bps)
+    b[0:3] = b"\xeb\x58\x90"
+    b[3:11] = b"mkdosfs "
+    struct.pack_into("<HBHBHHBH", b, 11, bps, 1, rsv, 2, 0, total, 0xF8, 0)
+    struct.pack_into("<IIHHIHH", b, 32, total, fsz, 0, 0, 2, 1, 3)
+    b[64], b[66] = 0x80, 0x29
+    b[71:82] = b"config\0\0\0\0\0"
+    b[82:90] = b"FAT32   "
+    b[510:512] = b"\x55\xaa"
+
+    def fat(c, v):
+        for k in range(2):
+            struct.pack_into("<I", b, (rsv + k * fsz) * bps + 4 * c, v)
+
+    def ent(slot, name, first, size):
+        o = data * bps + 32 * slot
+        b[o:o + 11] = name
+        b[o + 11] = 0x20
+        struct.pack_into("<H", b, o + 20, first >> 16)
+        struct.pack_into("<H", b, o + 26, first & 0xFFFF)
+        struct.pack_into("<I", b, o + 28, size)
+
+    for c, v in ((0, 0x0FFFFFF8), (1, 0x0FFFFFFF), (2, 0x0FFFFFFF), (3, 4), (4, 0x0FFFFFFF)):
+        fat(c, v)
+    b[data * bps:data * bps + 12] = b"config     \x08"
+    ent(1, b"A       TXT", 3, 1000)
+    for i, c in enumerate((3, 4)):
+        o = (data + c - 2) * bps
+        b[o:o + bps] = bytes([0x41 + i]) * bps
+    lost = []
+    if case == "powercut":
+        fat(10, 11)
+        fat(11, 0x0FFFFFFF)
+        lost = [10, 11]
+    elif case == "crosslinked":
+        fat(5, 4)
+        ent(2, b"B       TXT", 5, 1000)
+    used = 3 + len(lost) + (1 if case == "crosslinked" else 0)       # root, A.TXT (2), the rest
+    fs = bytearray(bps)
+    struct.pack_into("<I", fs, 0, 0x41615252)
+    struct.pack_into("<I", fs, 484, 0x61417272)
+    struct.pack_into("<II", fs, 488, maxc - 1 - used, 2)
+    struct.pack_into("<I", fs, 508, 0xAA550000)
+    b[bps:2 * bps] = fs
+    b[3 * bps:4 * bps] = b[0:bps]                                     # the backup boot sector, clean
+    b[4 * bps:5 * bps] = fs
+    b[65] |= 1                                                        # dirty (the boot sector only, as Linux does)
+    if case == "powercut":
+        b[bps:2 * bps] = b"\xff" * bps
+    return bytes(b), {"bps": bps, "rsv": rsv, "fsz": fsz, "data": data, "maxc": maxc, "lost": lost}
+
+
+def fatfix_result_ok(before, after, facts):
+    """The "powercut" image after a repair: what fsck would want, and nothing reachable or in the data area touched.
+    Returns "" when right, else what's wrong."""
+    bps, rsv, fsz, data, maxc = facts["bps"], facts["rsv"], facts["fsz"], facts["data"], facts["maxc"]
+    ent = lambda img, k, c: struct.unpack_from("<I", img, (rsv + k * fsz) * bps + 4 * c)[0]
+    if after[65] & 1:
+        return "still dirty"
+    if after[0:bps] != after[3 * bps:4 * bps]:
+        return "the backup boot sector differs from the boot sector"
+    if after[data * bps:] != before[data * bps:]:
+        return "the data area was written"
+    for c in facts["lost"]:
+        if ent(after, 0, c) or ent(after, 1, c):
+            return "lost cluster %d not freed" % c
+    for c in (0, 1, 2, 3, 4):
+        if ent(after, 0, c) != ent(before, 0, c) or ent(after, 1, c) != ent(before, 1, c):
+            return "FAT entry %d (in use) changed" % c
+    lead, = struct.unpack_from("<I", after, bps)
+    sig, free, nxt = struct.unpack_from("<III", after, bps + 484)
+    trail, = struct.unpack_from("<I", after, bps + 508)
+    really_free = sum(1 for c in range(2, maxc + 1) if ent(after, 0, c) & 0x0FFFFFFF == 0)
+    if (lead, sig, trail) != (0x41615252, 0x61417272, 0xAA550000) or free != really_free or ent(after, 0, nxt):
+        return "FSInfo not valid (free %d of %d, next %d)" % (free, really_free, nxt)
+    if after[71:82] != before[71:82]:
+        return "the label was changed"
+    return ""
+
+
+def fatfix_check(root):
+    """scbox2-fatfix from the image, under qemu-arm in the chroot: a power-cut image is repaired (and a second run
+    finds nothing to do), a cross-linked one is refused with nothing changed and the marker written. Returns
+    (ok, what was seen)."""
+    seen = []
+    for case in ("powercut", "crosslinked"):
+        img, facts = fat32_test_image(case)
+        host = os.path.join(root, "tmp", "fatfix-%s.img" % case)
+        open(host, "wb").write(img)
+        marker = "/tmp/fatfix-%s.marker" % case
+        cmd = ["chroot", root, "/.scbox2-qemu-arm", "/usr/bin/scbox2-fatfix", "-marker", marker,
+               "/tmp/fatfix-%s.img" % case]
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+        out = r.stdout.decode("latin-1", "replace")
+        after = open(host, "rb").read()
+        mk = os.path.join(root, marker.lstrip("/"))
+        if case == "powercut":
+            bad = "exit %d" % r.returncode if r.returncode != 0 else fatfix_result_ok(img, after, facts)
+            if not bad:
+                r2 = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+                if r2.returncode != 0 or open(host, "rb").read() != after or b"nothing to do" not in r2.stdout:
+                    bad = "a second run wasn't clean (exit %d)" % r2.returncode
+            if bad or os.path.exists(mk):
+                return False, "power-cut image: %s\n%s" % (bad or "a marker was written", out)
+            seen.append("a power-cut image repaired")
+        else:
+            if r.returncode != 1 or after != img or not os.path.exists(mk) or b"cross-linked" not in open(mk, "rb").read():
+                return False, "cross-linked image: exit %d (want 1), changed %s, marker %s\n%s" % (
+                    r.returncode, after != img, os.path.exists(mk), out)
+            seen.append("a cross-linked one refused untouched")
+    return True, ", ".join(seen)
+
+
 def startup_run(root):
     """One startup-check run, inside unshare -m -n -p -f (see startup_check). Exit 0 = the SSH server answered on
     22, the panel served the page, was still running 2 s later and opened nothing more on 22/80/443, and port 22
@@ -839,6 +1254,11 @@ def startup_run(root):
     with socket.socket() as ps:                                # a free high port (in this network namespace)
         ps.bind(("127.0.0.1", 0))
         port = ps.getsockname()[1]
+    # 0. the settings partition's check (as S38initdir runs it, before everything else)
+    fat_ok, fat_seen = fatfix_check(root)
+    if not fat_ok:
+        print("FAILED: scbox2-fatfix from the image: %s" % fat_seen)
+        sys.exit(1)
     # 1. the SSH server first (as S47scbox2-sshd before S48scbox2): port 22 must speak SSH
     sshd = start_sshd(root, cfg)
     ssh_ok, ssh_seen = ssh_answers()
@@ -894,9 +1314,9 @@ def startup_run(root):
     sshd2.kill()
     sys.stdout.write(sshd2.communicate()[0].decode("latin-1", "replace"))
     good = ok and alive and not bad and ssh_with_panel and crash.returncode != 0 and ssh_stub
-    print("\n%s: SSH on 22: %s; page served on 127.0.0.1:%d: %s (%.1f s), still running 2 s later: %s, listening on "
+    print("\n%s: settings-partition check: %s; SSH on 22: %s; page served on 127.0.0.1:%d: %s (%.1f s), still running 2 s later: %s, listening on "
           "22/80/443: %s; SSH still on 22 with the panel running: %s; with the panel binary crashing (exit %d): %s"
-          % ("ok" if good else "FAILED", ssh_seen, port, "yes" if ok else "NO", took, "yes" if alive else "NO",
+          % ("ok" if good else "FAILED", fat_seen, ssh_seen, port, "yes" if ok else "NO", took, "yes" if alive else "NO",
              ", ".join(bad) or "none (beyond the SSH server and the 127.0.0.2:80 net-check responder)",
              "yes" if ssh_with_panel else "NO", crash.returncode, ssh_stub_seen if ssh_stub else "NO: " + ssh_stub_seen))
     sys.exit(0 if good else 1)
@@ -927,8 +1347,10 @@ BRAND_ALLOW = {"/etc/init.d/S48scbox2": 1, "/usr/bin/scbox2-agent": None}   # No
 
 
 # Files a build of this kit must ship, checked by the gate in the build (not by --check, which also checks older
-# releases): the SSH server and its boot script are scanned like everything else, and must be there to be scanned.
-REQUIRED_SCANNED = ("/usr/bin/scbox2-sshd", "/etc/init.d/S47scbox2-sshd")
+# releases): the SSH server and its boot script, and the settings partition's check, are scanned like everything
+# else, and must be there to be scanned.
+REQUIRED_SCANNED = ("/usr/bin/scbox2-sshd", "/etc/init.d/S47scbox2-sshd", "/usr/bin/scbox2-fatfix",
+                    "/usr/libexec/scbox2/cfgmount", "/usr/libexec/scbox2/cfgwrite")
 
 
 def check_image(path, require=()):
@@ -1052,6 +1474,7 @@ def main():
     ap.add_argument("--firmware", help="stock SC Box II firmware.ius (2.2.1)")
     ap.add_argument("--agent", help="the panel ARM binary (tools/build-agent-box2.sh)")
     ap.add_argument("--sshd", help="the SSH server ARM binary (tools/build-sshd-box2.sh)")
+    ap.add_argument("--fatfix", help="the settings-partition check ARM binary (tools/build-fatfix-box2.sh)")
     ap.add_argument("--out", help="output .ius (for a release: scbox2-firmware-v<version>.ius)")
     ap.add_argument("--img", help="output SD .img (container at 16 MiB)")
     ap.add_argument("--version", help="release version, e.g. 0.5.0 or 0.5.0-owner (required; must match "
@@ -1073,7 +1496,7 @@ def main():
     if a.check:
         sys.exit(check_image(a.check))
 
-    for req in ("firmware", "agent", "sshd", "out", "version"):
+    for req in ("firmware", "agent", "sshd", "fatfix", "out", "version"):
         if not getattr(a, req):
             die("--%s is required (or use --check IMAGE)" % req)
     if not VERSION_RE.match(a.version):
@@ -1128,7 +1551,7 @@ def main():
 
         # 4. transform
         patchers = load_patchers(a.patches_dir)
-        place_panel_and_helpers(t, a.agent, a.sshd)
+        place_panel_and_helpers(t, a.agent, a.sshd, a.fatfix)
         place_intminer(t, patchers)
         write_release(t, version, a.agent, sys_md5)
         apply_binary_patches(t, patchers)
@@ -1246,5 +1669,7 @@ def verify_only_system_changed(firmware, out, sysit):
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--startup-run"]:       # one isolated startup-check run (see startup_check)
         startup_run(sys.argv[2])
+    elif sys.argv[1:2] == ["--shadow-run"]:      # the settings-in-RAM check (see shadow_check)
+        shadow_run(sys.argv[2], sys.argv[3])
     else:
         main()

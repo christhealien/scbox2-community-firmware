@@ -48,7 +48,7 @@ func chipTestRecover() {
 		err = writeAtomic(chipTrimPath(), b, 0o644)
 	}
 	if err == nil {
-		os.Remove(chipTestBackup())
+		cfgRemove(chipTestBackup())
 	}
 	chipTrimMu.Unlock()
 	switch {

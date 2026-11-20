@@ -2,7 +2,7 @@
 # Build the SC Box II SSH server (scbox2-sshd) from the shared panel source (agent/cmd/scbox2-sshd).
 #   Usage: tools/build-sshd-box2.sh AGENT_SRC_DIR OUT_BINARY
 # A program of its own, so SSH keeps working when the panel binary is damaged or crashing: it links only
-# agent/internal/sshcore and agent/internal/authfile (shared with the panel) and the vendored SSH/SFTP/pty
+# agent/internal/sshcore, agent/internal/authfile and agent/internal/cfgwin (shared with the panel) and the vendored SSH/SFTP/pty
 # packages, never the panel. Built like the panel (tools/build-agent-box2.sh): the module renamed scbox2-agent in a
 # scratch copy (so no embedded path names the SC Lite), -trimpath, no VCS stamp, vendored modules, the local Go
 # toolchain only. The source tree itself is not modified.
@@ -19,7 +19,7 @@ find "$T" -path "$T/vendor" -prune -o -name '*.go' -type f -print | xargs grep -
 cd "$T"
 # it must not link the panel: only these packages of this module
 DEPS=$(GOFLAGS=-mod=vendor GOTOOLCHAIN=local go list -deps ./cmd/scbox2-sshd | grep '^scbox2-agent' | sort | tr '\n' ' ')
-[ "$DEPS" = "scbox2-agent/cmd/scbox2-sshd scbox2-agent/internal/authfile scbox2-agent/internal/sshcore " ] ||
+[ "$DEPS" = "scbox2-agent/cmd/scbox2-sshd scbox2-agent/internal/authfile scbox2-agent/internal/cfgwin scbox2-agent/internal/sshcore " ] ||
 	{ echo "scbox2-sshd links more of the panel than it may: $DEPS"; exit 1; }
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 GOFLAGS=-mod=vendor GOTOOLCHAIN=local \
 	go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$T/scbox2-sshd" ./cmd/scbox2-sshd

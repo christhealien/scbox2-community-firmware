@@ -278,7 +278,7 @@ func handlePower(w http.ResponseWriter, r *http.Request) {
 			activity.emit(fmt.Sprintf("⚡ power calibrated: %.0f W at %d MHz · PV %d (factor %.3f)", in.CalWatts, pp.FreqMHz, pp.PVMv, c.Factor))
 		}
 		if err := savePowerConfig(c); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 	}

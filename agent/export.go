@@ -120,7 +120,7 @@ func resultsCSV(b tunerBundle) []byte {
 		for _, r := range b.results {
 			sb.WriteString(strings.Join([]string{
 				r.Time, itoa(r.MHz), itoa(r.MV), box2VoltsCSV(r.MV), r.Result,
-				fmt.Sprintf("%.2f", r.THS), fmt.Sprintf("%.1f", r.MaxT), itoa(r.Fan),
+				fmt.Sprintf("%.2f", r.THS), fmt.Sprintf("%.1f", r.MaxT), fanCSV(r.Fan),
 				itoa(r.ErrAdd), fmt.Sprintf("%.1f", r.MinS), csvField(r.Reason),
 			}, ","))
 			sb.WriteByte('\n')
@@ -131,7 +131,7 @@ func resultsCSV(b tunerBundle) []byte {
 	for _, r := range b.results {
 		sb.WriteString(strings.Join([]string{
 			r.Time, itoa(r.MHz), itoa(r.MV), itoa(r.PV), r.Result,
-			fmt.Sprintf("%.2f", r.THS), fmt.Sprintf("%.1f", r.MaxT), itoa(r.Fan),
+			fmt.Sprintf("%.2f", r.THS), fmt.Sprintf("%.1f", r.MaxT), fanCSV(r.Fan),
 			itoa(r.ErrAdd), fmt.Sprintf("%.1f", r.MinS), csvField(r.Reason),
 		}, ","))
 		sb.WriteByte('\n')
@@ -261,6 +261,7 @@ func privateBundle(b tunerBundle) tunerBundle {
 // saveTunerRun writes this run's files to <tunerdir>/<miner>/ and appends to the rolling
 // log-all.txt. Best-effort: a read-only or missing path is logged, not fatal.
 func saveTunerRun(b tunerBundle) {
+	defer func() { cfgPersist(tunerRunDir()) }() // the Box II: the run's files onto the flash once it ends (cfgshadow.go)
 	lt := saveTunerFiles(b)
 	if lt == nil {
 		return
@@ -433,4 +434,12 @@ func diskExport(w http.ResponseWriter, kind string) bool {
 	}
 	serveBytes(w, minerLabel()+"-"+fc[0], fc[1], data)
 	return true
+}
+
+// fanCSV: a test's fan % for results.csv; empty when the hold wasn't holding (not "0": the fans weren't off)
+func fanCSV(f int) string {
+	if f <= 0 {
+		return ""
+	}
+	return itoa(f)
 }

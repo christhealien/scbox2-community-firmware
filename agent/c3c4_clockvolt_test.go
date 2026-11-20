@@ -431,3 +431,17 @@ func TestC34ControlGETInfo(t *testing.T) {
 		t.Fatalf("GET box2 info: %s", rec.Body.String())
 	}
 }
+
+func TestBox2ConfirmWaitScalesWithMove(t *testing.T) {
+	old := box2ConfirmWait
+	box2ConfirmWait = 45 * time.Second
+	defer func() { box2ConfirmWait = old }()
+	for _, c := range []struct {
+		from, to int
+		want     time.Duration
+	}{{690, 690, 45 * time.Second}, {690, 675, 75 * time.Second}, {690, 650, 105 * time.Second}, {690, 525, 180 * time.Second}, {0, 650, 45 * time.Second}} {
+		if got := box2ConfirmWaitFor(box2Want{MHz: c.to, Before: powerplan{FreqMHz: c.from}}); got != c.want {
+			t.Errorf("%d→%d: %s, want %s", c.from, c.to, got, c.want)
+		}
+	}
+}

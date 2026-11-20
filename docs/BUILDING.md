@@ -33,10 +33,12 @@ From the repository root:
 
 ```sh
 mkdir -p out
-TAGS=scbox2,public kit/tools/build-agent-box2.sh agent out/scbox2-agent
+kit/tools/build-agent-box2.sh agent out/scbox2-agent
 ```
 
-This is the build the releases use. The script copies `agent/` to a scratch directory, names the Go module
+This is the build the releases use: with no `TAGS` set the script builds the public release (`TAGS=scbox2,public`,
+the default), so the command above and `TAGS=scbox2,public kit/tools/build-agent-box2.sh agent out/scbox2-agent`
+give the same binary. The script copies `agent/` to a scratch directory, names the Go module
 `scbox2-agent` there (the source tree isn't changed), builds, and prints the first 16 hex digits of the binary's SHA-256 and the Go version.
 It runs:
 
@@ -51,8 +53,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 GOFLAGS=-mod=vendor GOTOOLCHAIN=loca
 | `public` | The public release: the features described in the [README](../README.md) always on, the rest off, no per-unit switches. |
 
 > [!IMPORTANT]
-> Use `TAGS=scbox2,public`. Without `TAGS` the script builds with `-tags scbox2` only: the maintainer's
-> commissioning build, which is not published and not described in these docs.
+> `TAGS` defaults to `scbox2,public`, the public release build: leave it unset to reproduce a release. Any other tag
+> set is not published and not described in these docs.
 
 `-trimpath`, `-buildvcs=false`, vendored modules and `GOTOOLCHAIN=local` keep the binary reproducible.
 
@@ -70,21 +72,35 @@ from the repository root the same way:
 kit/tools/build-sshd-box2.sh agent out/scbox2-sshd
 ```
 
-The script refuses a binary that links anything of the panel beyond `internal/sshcore` and `internal/authfile`.
+The script refuses a binary that links anything of the panel beyond `internal/sshcore`, `internal/authfile` and
+`internal/cfgwin` (the settings write window).
 The same SSH server goes with either panel build.
+
+### The settings-partition check
+
+`agent/cmd/scbox2-fatfix` checks the config partition at every boot, before it is mounted, and repairs what a
+power cut can safely leave behind (lost clusters, an invalid FSInfo sector, the dirty flag). On anything riskier it
+changes nothing and the panel shows what it found. It is also how the boot scripts save a setting onto the
+partition, which is read-only while the miner runs (`scbox2-fatfix commit`, via `/usr/libexec/scbox2/cfgwrite`).
+It uses the Go standard library and `internal/cfgwin` only:
+
+```sh
+kit/tools/build-fatfix-box2.sh agent out/scbox2-fatfix
+```
 
 ## 2. Build the firmware
 
 From `kit/`, as root:
 
 ```sh
-python3 build_box2.py \
+SOURCE_DATE_EPOCH=<the release's> python3 build_box2.py \
   --firmware /path/to/your/stock-scbox2-2.2.1.ius \
   --agent    /path/to/scbox2-agent \
   --sshd     /path/to/scbox2-sshd \
-  --out      out/scbox2-firmware-v0.5.1.ius \
-  --img      out/scbox2-sd-v0.5.1.img \
-  --version  0.5.1
+  --fatfix   /path/to/scbox2-fatfix \
+  --out      out/scbox2-firmware-v0.5.6.ius \
+  --img      out/scbox2-sd-v0.5.6.img \
+  --version  0.5.6 --xz --sums --require-startup-check
 ```
 
 | Option | Meaning |
@@ -92,23 +108,21 @@ python3 build_box2.py \
 | `--firmware` | Your stock SC Box II `.ius` (required) |
 | `--agent` | The ARM panel binary from step 1 (required) |
 | `--sshd` | The SSH server binary from step 1 (required) |
+| `--fatfix` | The settings-partition check from step 1 (required) |
 | `--out` | The update file for the panel (required). Publish it as `scbox2-firmware-vX.Y.Z.ius`: the panel looks for that name on GitHub and takes the version from it. |
 | `--img` | The SD-card image (the container placed at 16 MiB) |
 | `--version` | Written into `/etc/scbox2-release` on the miner |
 | `--card-size` | SD image size in MiB (default: the smallest 1 MiB-aligned size) |
+| `--xz` | Also write `IMG.xz` with fixed xz settings (`-6 --check=crc64 --block-size=25165824 -T2`), so it is byte-reproducible too, and check it decompresses to the image |
+| `--sums` | Write `SHA256SUMS` (the `.ius` and, with `--xz`, the `.img.xz`) next to `--out` |
+| `--require-startup-check` | Fail instead of skipping when the start-up check can't run (releases use it) |
 | `--skip-startup-check` | Skip the qemu start-up check (not for releases) |
 | `--keep-work` | Keep the work tree for debugging |
 | `--check IMAGE` | Only run the leak check on a built image |
 
-Then compress the SD image and write the checksums:
-
-```sh
-cd out
-xz -k scbox2-sd-v0.5.1.img
-sha256sum scbox2-firmware-v0.5.1.ius scbox2-sd-v0.5.1.img.xz > SHA256SUMS
-```
-
-`build_box2.py` also prints the `SHA256SUMS` line for the `.ius`.
+With `--xz --sums` the build writes the compressed SD image and `SHA256SUMS` itself. (A plain `xz -k` of the
+image works for flashing, but its bytes depend on the xz version and settings, so it won't match a release's
+`.img.xz`.)
 
 ## What the build does
 
@@ -127,8 +141,14 @@ sha256sum scbox2-firmware-v0.5.1.ius scbox2-sd-v0.5.1.img.xz > SHA256SUMS
 7. Repacks the container with only the system item changed, and writes the SD image.
 8. **Brick-safety check:** every byte before the system item matches stock, apart from its size word and the
    header CRC; the OEM's own update checks pass.
-9. **Start-up check** (optional): starts the panel under qemu-arm and checks it serves the panel page. Without
-   qemu it is skipped with a one-line note.
+9. **Start-up check** (optional): under qemu-arm, runs the settings-partition check on two test images (a
+   power-cut one must be repaired, a cross-linked one left untouched), starts the SSH server and the panel, and
+   checks the panel serves its page. Then, once, it boots the settings the way the miner does. The image's own
+   boot step, the OEM's backend and the panel run together, and the check proves four things: the partition is
+   read-only, fan changes stay in RAM and leave the partition byte for byte the same, the patched backend still
+   takes a plan when its settings can't be saved, and a panel save writes in a short window and leaves the
+   partition read-only. That part needs Linux 6.7+ (`binfmt_misc` in a user namespace; nothing is registered on
+   the host) and `openssl`. Without qemu, the check is skipped with a one-line note.
 10. **Leak check** on the SD image: no OEM cloud host, hardcoded DNS or NTP host is left in what the miner
     runs (it unpacks the squashfs to search inside compressed binaries).
 
@@ -140,10 +160,19 @@ sha256sum scbox2-firmware-v0.5.1.ius scbox2-sd-v0.5.1.img.xz > SHA256SUMS
 
 ## Reproducible builds
 
-File times and the squashfs creation time are pinned to `SOURCE_DATE_EPOCH` (default `1761955200`,
-2025-11-01 00:00 UTC). The same stock firmware, panel binary and kit give the same `.ius` and `.img`, byte for
-byte, with the same tool versions: **go1.24.7** for the panel and **squashfs-tools 4.7.5** for the image. To
-check a release, build with the same inputs and compare against its `SHA256SUMS`.
+The public build reproduces: the same source, the same stock firmware and the same tool versions give the same
+panel binary and the same `.ius`, `.img` and `.img.xz`, byte for byte.
+
+- **The panel and its helpers:** the default `TAGS` (the public build), `-trimpath`, `-buildvcs=false`, vendored
+  modules and `GOTOOLCHAIN=local`, with **go1.24.7**. The build scripts print each binary's SHA-256 prefix and the
+  Go version.
+- **The image:** file times and the squashfs creation time are pinned to `SOURCE_DATE_EPOCH` (without it, the
+  pinned default `1761955200`, 2025-11-01 00:00 UTC; releases set it to their release date, e.g.
+  `SOURCE_DATE_EPOCH=$(date -u -d 2026-11-13 +%s)`), with **squashfs-tools 4.7.5**; `--xz` uses fixed xz settings.
+  `/etc/scbox2-release` on the miner shows the build time, so you can read off the release's `SOURCE_DATE_EPOCH`.
+
+To check a release, build all three binaries and the image with the same inputs and compare against its
+`SHA256SUMS`.
 
 ## The ARM helpers
 

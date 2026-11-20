@@ -50,9 +50,9 @@ func loadShares() {
 	}
 }
 
-func saveShares() {
+func saveShares() error {
 	b, _ := json.Marshal(shares)
-	cfgWrite(sharesPath(), b, 0600)
+	return cfgWrite(sharesPath(), b, 0600)
 }
 
 // settingText: what the miner runs now, for the "On" column.
@@ -133,7 +133,10 @@ func handleShares(w http.ResponseWriter, r *http.Request) {
 			keep = append(keep, shareHit{V: shares.NowV, At: shares.NowAt, On: shares.NowOn})
 		}
 		shares.History, shares.ResetAt = keep, time.Now().Unix()
-		saveShares()
+		if err := saveShares(); err != nil { // (cleared in memory all the same)
+			writeJSON(w, map[string]any{"ok": false, "err": "cleared until the panel restarts, but " + cfgSaveErr(err)})
+			return
+		}
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}

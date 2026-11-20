@@ -105,7 +105,9 @@ func TestPresetTriesTheMapTemperature(t *testing.T) {
 	if !strings.Contains(log, "at the map's 70°C") {
 		t.Fatalf("no try at the map's temperature:\n%s", log)
 	}
-	if !strings.Contains(log, "RESULT: saved 4 presets") {
+	// (v0.5.6) Low came out at Middle's setting: one preset for it, so 3 are saved; Lowest power, warm-failing too,
+	// is saved at the cooler temperature
+	if !strings.Contains(log, "RESULT: saved 3 presets") || !strings.Contains(log, "PRESET Low: 600 MHz / PV 9100 (mV 8800) is the same setting as Middle: not saved twice") {
 		t.Fatalf("the warm-failing presets weren't saved at the cooler temperature:\n%s", log)
 	}
 }

@@ -44,7 +44,7 @@ var commissionable = map[string][]commissionFeature{
 	"scbox2": {
 		{Key: "SoftIdle", Label: "Stop hashing from the panel (safety guards, schedule idle)",
 			Test: "C1 soft idle", set: func(f *modelFeatures, on bool) { f.SoftIdle = on }},
-		{Key: "PowerEstimate", Label: "Power estimate (watts, J/TH: wall-meter readings per setting, else the OEM's published figure for the stock modes)",
+		{Key: "PowerEstimate", Label: "Power estimate (watts, J/TH: wall-meter readings per setting, else an estimate measured on one unit)",
 			Test: "C2 power estimate", set: func(f *modelFeatures, on bool) { f.PowerEstimate = on }},
 		{Key: "ClockControl", Label: "Clock control (any clock inside the board's window)",
 			Test: "C3 clock control", set: func(f *modelFeatures, on bool) { f.ClockControl = on }},
@@ -53,10 +53,10 @@ var commissionable = map[string][]commissionFeature{
 		{Key: "ChipTrims", Label: "Per-chip clock trims",
 			Requires: []string{"ClockControl"},
 			Test:     "C5 chip trims", set: func(f *modelFeatures, on bool) { f.ChipTrims = on }},
-		{Key: "CeilingProbe", Label: "Clock ceiling probe (steps the clock above 690 MHz, up to this build's ceiling, and finds where it stops running clean)",
+		{Key: "CeilingProbe", Label: "Clock ceiling probe (steps the clock above 690 MHz, up to 750 MHz, and finds where it stops running clean)",
 			Requires: []string{"ClockControl"},
 			Test:     "C6 ceiling probe", set: func(f *modelFeatures, on bool) { f.CeilingProbe = on }},
-		{Key: "OverclockUnlock", Label: "Overclock (clocks above 690 MHz, up to this build's ceiling; needs the probe first)",
+		{Key: "OverclockUnlock", Label: "Overclock (clocks above 690 MHz, up to this unit's clean probe result, never above 750 MHz)",
 			Requires: []string{"ClockControl", "CeilingProbe"},
 			Test:     "C7 overclock", set: func(f *modelFeatures, on bool) { f.OverclockUnlock = on }},
 		{Key: "Tuner", Label: "Auto-tuner",
@@ -70,9 +70,12 @@ var commissionable = map[string][]commissionFeature{
 // publicFeatures: in the public release (publicBuild) these features are always on, everything else in
 // commissionable is always off, and nothing can be switched (no Commissioning section, no banner). They are the ones
 // that passed their hardware tests (C1 stop hashing, C2 power estimate, C3 clock, C4 voltage, C5 chip trims,
-// C9 in-panel update); the ceiling probe (C6), overclock (C7) and the tuner (C8) wait for a later release.
+// C6 ceiling probe, C7 overclock, C8 tuner (passed on hardware 2026-11-15; public from v0.5.5, with its chip
+// trims and preset building, whose own hardware test, C8b, runs on the v0.5.5 public image), C9 in-panel update). The overclock keeps its per-unit rule here too: it opens only up to this unit's own clean probe result
+// (ceilingbox2.go), and the tuner's clock window is that same window (clockWindowHi). The tuner's fan hold aims at
+// most at box2HoldMaxC (74 °C) in both builds.
 var publicFeatures = map[string][]string{
-	"scbox2": {"SoftIdle", "PowerEstimate", "ClockControl", "VoltageControl", "ChipTrims", "FirmwareUpdate"},
+	"scbox2": {"SoftIdle", "PowerEstimate", "ClockControl", "VoltageControl", "ChipTrims", "CeilingProbe", "OverclockUnlock", "Tuner", "FirmwareUpdate"},
 }
 
 type commissionEntry struct {
@@ -279,7 +282,7 @@ func handleCommission(w http.ResponseWriter, r *http.Request) {
 	err := cfgWrite(commissionPath(), b, 0o600)
 	commissionMu.Unlock()
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 		return
 	}
 	state := map[bool]string{true: "on", false: "off"}[in.On]

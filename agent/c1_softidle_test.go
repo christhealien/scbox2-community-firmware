@@ -434,7 +434,7 @@ func TestC1FlagNotTakenFallsBack(t *testing.T) {
 	e := newC1Env(t, true)
 	e.f.noFlag = true
 	err := idleAction(model)
-	if err == nil || !strings.Contains(err.Error(), "still lists board") || !strings.Contains(err.Error(), idleActionUnprovenMsg) {
+	if err == nil || !strings.Contains(err.Error(), "still lists board") || !hasBackstopCaveat(err.Error()) {
 		t.Fatalf("idleAction = %v", err)
 	}
 	if box2Disabled.Load() || e.fans != 1 || markerExists() {

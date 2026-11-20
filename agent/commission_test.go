@@ -35,6 +35,9 @@ func commissionPost(t *testing.T, body string) map[string]any {
 }
 
 func TestCommissionBox2StartsAllOff(t *testing.T) {
+	if publicBuild {
+		t.Skip("the owner's commissioning build only: the public release has a fixed feature set (commission.go publicFeatures)")
+	}
 	defer commissionSetup(t)()
 	applyCommission()
 	f := model.Feat
@@ -45,6 +48,9 @@ func TestCommissionBox2StartsAllOff(t *testing.T) {
 }
 
 func TestCommissionApplyEnforcesRequirements(t *testing.T) {
+	if publicBuild {
+		t.Skip("the owner's commissioning build only: the public release has a fixed feature set (commission.go publicFeatures)")
+	}
 	defer commissionSetup(t)()
 	st := commissionState{Model: "scbox2", Features: map[string]commissionEntry{
 		"Tuner": {On: true}, "ClockControl": {On: true}, // VoltageControl missing: the tuner must not come on
@@ -66,6 +72,9 @@ func TestCommissionApplyEnforcesRequirements(t *testing.T) {
 }
 
 func TestCommissionFileForOtherModelIgnored(t *testing.T) {
+	if publicBuild {
+		t.Skip("the owner's commissioning build only: the public release has a fixed feature set (commission.go publicFeatures)")
+	}
 	defer commissionSetup(t)()
 	b, _ := json.Marshal(commissionState{Model: "sclite", Features: map[string]commissionEntry{"ClockControl": {On: true}}})
 	os.WriteFile(commissionPath(), b, 0o600)
@@ -76,6 +85,9 @@ func TestCommissionFileForOtherModelIgnored(t *testing.T) {
 }
 
 func TestCommissionPostOnNeedsPasswordAndRequirements(t *testing.T) {
+	if publicBuild {
+		t.Skip("the owner's commissioning build only: the public release has a fixed feature set (commission.go publicFeatures)")
+	}
 	defer commissionSetup(t)()
 	if out := commissionPost(t, `{"feature":"ClockControl","on":true,"password":"wrong"}`); out["ok"] == true {
 		t.Fatal("switched on with a wrong password")

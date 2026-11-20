@@ -49,6 +49,7 @@ const (
 	evLogin     = "login_block"   // an address was blocked after too many wrong passwords
 	evDaily     = "daily"         // a summary once a day
 	evSchedule  = "schedule"      // the schedule switched preset
+	evStorage   = "storage"       // the settings storage can't be written (read-only after a power cut) or is damaged
 )
 
 // eventEmoji prefixes each notification (matches the blake2b-asic-control app's style).
@@ -75,6 +76,7 @@ var eventEmoji = map[string]string{
 	evLogin:     "🔐",
 	evDaily:     "📊",
 	evSchedule:  "🗓️",
+	evStorage:   "💾",
 }
 
 // notifyGap: how long a repeat of an event is held back, where the default (Settings, 30 min) doesn't fit.
@@ -95,7 +97,7 @@ func composeNotify(event, msg string) string {
 
 // eventLabels drives the UI checklist (order preserved).
 var eventOrder = []string{evStopped, evHot, evHashLow, evBoard, evFan, evThermal, evRestarted, evNoPool, evPoolSw, evPoolGuard,
-	evChipWeak, evChipTrim, evTuning, evBestShare, evUpdate, evNewFW, evLogin, evSchedule, evDaily, evRejected, evAccepted}
+	evChipWeak, evChipTrim, evTuning, evBestShare, evUpdate, evNewFW, evLogin, evStorage, evSchedule, evDaily, evRejected, evAccepted}
 var eventLabels = map[string]string{
 	evStopped:   "Miner stops answering (and when it's back)",
 	evHot:       "Too hot",
@@ -118,6 +120,7 @@ var eventLabels = map[string]string{
 	evLogin:     "An address was blocked after too many wrong passwords",
 	evDaily:     "Daily summary (09:00)",
 	evSchedule:  "The schedule switched preset",
+	evStorage:   "Settings can't be saved (the settings storage is read-only or damaged)",
 }
 
 type notifyConfig struct {
@@ -154,7 +157,7 @@ func defaultNotifyConfig() notifyConfig {
 			evStopped: true, evHot: true, evHashLow: true, evRestarted: true,
 			evTuning: true, evBestShare: true, evChipWeak: true, evRejected: false, evAccepted: false, evPoolGuard: true, evChipTrim: true,
 			evBoard: true, evFan: true, evPoolSw: true, evNoPool: true, evThermal: true, evUpdate: true, evNewFW: false,
-			evLogin: true, evDaily: false, evSchedule: false,
+			evLogin: true, evDaily: false, evSchedule: false, evStorage: true,
 		},
 	}
 }
@@ -471,7 +474,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		notifyCfg = cur
 		notifyMu.Unlock()
 		if err := saveNotifyConfig(cur); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
@@ -597,7 +600,7 @@ func notifyPriority(event, msg string) int {
 	switch event {
 	case evHot, evThermal:
 		return 5
-	case evStopped, evBoard, evFan, evNoPool, evPoolGuard, evLogin:
+	case evStopped, evBoard, evFan, evNoPool, evPoolGuard, evLogin, evStorage:
 		return 4
 	case evBestShare, evDaily, evRejected, evAccepted, evSchedule:
 		return 2

@@ -74,7 +74,7 @@ func chipHookInertAtStart() {
 	if _, err := os.Stat(chipHookFlag()); err != nil {
 		return
 	}
-	if err := os.Remove(chipHookFlag()); err != nil {
+	if err := cfgRemove(chipHookFlag()); err != nil {
 		log.Printf("chip trims: not commissioned on this unit, but the chiphook flag couldn't be removed: %v", err)
 		return
 	}

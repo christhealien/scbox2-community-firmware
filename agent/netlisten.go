@@ -205,7 +205,7 @@ func servePanel(ln net.Listener, h http.Handler, tlsOnly bool) error {
 			continue
 		}
 		backoff = 5 * time.Millisecond
-		if ip := remoteIPOf(c.RemoteAddr()); ip != nil && !peerAllowed(ip) {
+		if !peerAllowed(remoteIPOf(c.RemoteAddr())) {
 			refuseOutside(c) // from outside the local network: a one-line answer, then closed (access.go)
 			continue
 		}
@@ -375,7 +375,7 @@ func (c *countedConn) Close() error {
 // network" is on), or an address with 48 open connections already (256 in all).
 func connAllow(c net.Conn) (net.Conn, bool) {
 	ip := remoteIPOf(c.RemoteAddr())
-	if ip != nil && !peerAllowed(ip) {
+	if !peerAllowed(ip) {
 		c.Close()
 		return c, false
 	}

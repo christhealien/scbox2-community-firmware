@@ -342,7 +342,7 @@ func sameExceptMaxRPM(a, b []byte) error {
 
 // fanCheckStock: back to the OEM's own figures (from the next reboot).
 func fanCheckStock() error {
-	if err := os.Remove(fanOverlayPath()); err != nil && !os.IsNotExist(err) {
+	if err := cfgRemove(fanOverlayPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	activity.emit("🌀 fan check back to " + oemOf() + " figures, from the next reboot")
@@ -464,7 +464,7 @@ var fanTestRerunSteps = func() error {
 	if !wasIdle && restore != nil {
 		// on disk first: a panel that stops during the test (a crash, an update, a power cut) puts it back at start
 		if b, err := json.Marshal(fanRerunRec{At: time.Now().Unix(), Setting: raw, Charge: charge0}); err == nil && writeAtomic(fanRerunPath(), b, 0o644) == nil {
-			defer os.Remove(fanRerunPath())
+			defer cfgRemove(fanRerunPath())
 		}
 	}
 	if !wasIdle {
@@ -478,7 +478,10 @@ var fanTestRerunSteps = func() error {
 	fanTestAt.Store(monoSec())
 	cmd := exec.Command("sh", "-c", fanRerunCmd)
 	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))
-	if out, err := cmd.CombinedOutput(); err != nil {
+	endTr := traceWrite("spawn: the OEM's watchdog restarted (fan check)")
+	out, err := cmd.CombinedOutput()
+	endTr(err)
+	if err != nil {
 		if !wasIdle {
 			setCharge("idle") // it stays there: say so (the banner, the schedule)
 		}
@@ -548,7 +551,7 @@ func fanRerunRecover() {
 	if err != nil {
 		return
 	}
-	defer os.Remove(fanRerunPath())
+	defer cfgRemove(fanRerunPath())
 	var r fanRerunRec
 	if json.Unmarshal(b, &r) != nil || len(r.Setting) == 0 || !json.Valid(r.Setting) {
 		activity.emit("🌀 a fan test re-run was cut short by a restart: the miner may still be on its Idle. Apply " + stockWord() + " or a preset")
@@ -624,6 +627,7 @@ func productCheckAtStart() {
 	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))
 	cmd.Run()
 	os.Rename(fanOverlayPath(), fanOverlayPath()+".bad")
+	cfgPersist(fanOverlayPath(), fanOverlayPath()+".bad")
 	activity.emit("⚠ the fan check's fitted figures can't be used (" + err.Error() + "): back to " + oemOf() + " figures (Controls & fan → Fan check to fit them again)")
 	if _, _, perr := readProductFans(productPath); perr == nil {
 		// It parsed, so the OEM's watchdog started with its figures and needs restarting to pick up the

@@ -34,7 +34,7 @@ func (m *c67Miner) clock() int {
 	return pp.FreqMHz
 }
 
-// c67TestCeil: the overclock ceiling these tests give the profile (not the Box II's: that one is undecided).
+// c67TestCeil: the overclock cap these tests give the profile (the Box II's own box2OCHardMax, set explicitly).
 const c67TestCeil = 750
 
 func c67Setup(t *testing.T, feat modelFeatures) *c67Miner {
@@ -52,10 +52,11 @@ func c67Setup(t *testing.T, feat modelFeatures) *c67Miner {
 	fanGuardMu.Unlock()
 	useBox2(t)
 	model.Feat = feat
-	// the SC Box II's own overclock ceiling isn't decided (c67TestCeil = 0: C6/C7 refuse above 690 MHz,
-	// TestBox2NoClockAbove690); these tests exercise the probe and unlock machinery against a test ceiling
 	model.OCHardMax = c67TestCeil
 	setWindowsFromModel()
+	box2PowMu.Lock() // the probe's power limit reads the power readings: none here (a fresh config dir)
+	box2PowCfg, box2PowRead = box2PowerConfig{}, false
+	box2PowMu.Unlock()
 	m := &c67Miner{health: boardHealth{ID: 0, Chips: 36, Expected: 36}}
 	json.Unmarshal([]byte(box2Setting), &m.setting)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +253,8 @@ func TestC6ProbeStartConditions(t *testing.T) {
 	}
 }
 
-// A clean unit: every 10 MHz step to the 750 MHz ceiling holds; each was applied at V code 42; back on 690.
+// A clean unit: every chip-grid step to the 750 MHz cap holds (700, 712.5, 725, 737.5, 750 on the chips); each
+// was applied at V code 42; back on 690; the result is saved for this unit.
 func TestC6ProbeStepsAndReturnsToStock(t *testing.T) {
 	m := c67Setup(t, c67Probe)
 	st := c67Run(t, m)
@@ -260,7 +262,10 @@ func TestC6ProbeStepsAndReturnsToStock(t *testing.T) {
 	for _, w := range m.writes {
 		got = append(got, w.FreqMHz)
 	}
-	if want := "[700,710,720,730,740,750,690]"; mustJSON(got) != want {
+	if r, ok := box2ProbeResult(); !ok || r.Cap != 750 || r.Top != 750 || r.Level != 42 {
+		t.Fatalf("saved result %+v (ok %v)", r, ok)
+	}
+	if want := "[700,720,725,740,750,690]"; mustJSON(got) != want {
 		t.Fatalf("steps %v, want %s", got, want)
 	}
 	if a := st.Axes[0]; a.State != "done" || a.Cap != 750 || !a.Held || a.HardMax != c67TestCeil {
@@ -273,15 +278,16 @@ func TestC6ProbeStepsAndReturnsToStock(t *testing.T) {
 func TestC6ProbeGuards(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		trip   int
+		trip   int // the step that fails
+		prev   int // the last clean step before it
 		why    string
 		set    func(m *c67Miner)
 		atStep func(mhz int, m *c67Miner, b *board)
 	}{
-		{name: "heat 82 twice", trip: 750, why: "heat", set: func(m *c67Miner) {
+		{name: "heat 82 twice", trip: 750, prev: 740, why: "heat", set: func(m *c67Miner) {
 			m.temp = func(mhz int) float64 { return 70 + float64(mhz-690)/5 } // 750 → 82
 		}},
-		{name: "heat 84 once", trip: 720, why: "heat", set: func(m *c67Miner) {
+		{name: "heat 84 once", trip: 720, prev: 700, why: "heat", set: func(m *c67Miner) {
 			m.temp = func(mhz int) float64 {
 				if mhz >= 720 {
 					return 84.5
@@ -289,7 +295,7 @@ func TestC6ProbeGuards(t *testing.T) {
 				return 76
 			}
 		}},
-		{name: "hw errors", trip: 720, why: "hardware errors", set: func(m *c67Miner) {
+		{name: "hw errors", trip: 720, prev: 700, why: "hardware errors", set: func(m *c67Miner) {
 			m.hwAdd = func(mhz int) int {
 				if mhz >= 720 {
 					return 20 // 20 per 1000 nonces: 1.96 %
@@ -297,22 +303,22 @@ func TestC6ProbeGuards(t *testing.T) {
 				return 1
 			}
 		}},
-		{name: "chip re-init", trip: 730, why: "chip dropout", atStep: func(mhz int, m *c67Miner, b *board) {
+		{name: "chip re-init", trip: 740, prev: 725, why: "chip dropout", atStep: func(mhz int, m *c67Miner, b *board) {
 			if mhz >= 730 {
 				m.health.Reinit24 = 1
 			}
 		}},
-		{name: "chip lost", trip: 740, why: "chip dropout", atStep: func(mhz int, m *c67Miner, b *board) {
+		{name: "chip lost", trip: 740, prev: 725, why: "chip dropout", atStep: func(mhz int, m *c67Miner, b *board) {
 			if mhz >= 740 {
 				m.health.Chips = 34
 			}
 		}},
-		{name: "board dead", trip: 700, why: "dropout", atStep: func(mhz int, m *c67Miner, b *board) {
+		{name: "board dead", trip: 700, prev: 690, why: "dropout", atStep: func(mhz int, m *c67Miner, b *board) {
 			if mhz >= 700 {
 				b.Alive = false
 			}
 		}},
-		{name: "no temperature", trip: 710, why: "no board temperature", atStep: func(mhz int, m *c67Miner, b *board) {
+		{name: "no temperature", trip: 720, prev: 700, why: "no board temperature", atStep: func(mhz int, m *c67Miner, b *board) {
 			if mhz >= 710 {
 				b.Temps = []float64{-150, -150}
 			}
@@ -326,8 +332,11 @@ func TestC6ProbeGuards(t *testing.T) {
 			m.at = c.atStep
 			st := c67Run(t, m)
 			a := st.Axes[0]
-			if a.State != "done" || a.Cap != c.trip-10 || !strings.Contains(a.Note, c.why) {
-				t.Fatalf("result %+v; want clean to %d, failed at %d for %q; log:\n%s", a, c.trip-10, c.trip, c.why, strings.Join(st.Log, "\n"))
+			if a.State != "done" || a.Cap != c.prev || !strings.Contains(a.Note, c.why) {
+				t.Fatalf("result %+v; want clean to %d, failed at %d for %q; log:\n%s", a, c.prev, c.trip, c.why, strings.Join(st.Log, "\n"))
+			}
+			if r, ok := box2ProbeResult(); !ok || r.Cap != c.prev || r.FailAt != c.trip || !strings.Contains(r.Why, c.why) {
+				t.Fatalf("saved result %+v (ok %v)", r, ok)
 			}
 			if hi := c67MaxWrite(m); hi != c.trip {
 				t.Fatalf("BUG: the probe wrote up to %d MHz, it must stop at the failing %d", hi, c.trip)
@@ -348,13 +357,17 @@ func TestC6ProbeStopReturnsToStock(t *testing.T) {
 	if a := st.Axes[0]; a.State != "aborted" {
 		t.Fatalf("a stopped probe reports %+v", a)
 	}
+	if r, ok := box2ProbeResult(); ok {
+		t.Fatalf("a stopped probe saved a result: %+v", r)
+	}
 	if hi := c67MaxWrite(m); hi != 720 {
 		t.Fatalf("stopped at 720, wrote up to %d", hi)
 	}
 }
 
-// The unlock: the window opens to c67TestCeil only with OverclockUnlock on and accepted, the voltage code stays
-// stock above 690 unless VoltageControl is on, a probe cap narrows it, and re-lock closes it. SC Lite unchanged.
+// The unlock: the window opens only with OverclockUnlock on and accepted and a clean probe result saved (here
+// 750 MHz: the whole cap), the voltage code stays stock above 690 unless VoltageControl is on, a probe cap narrows
+// it, and re-lock closes it. SC Lite unchanged.
 func TestC7UnlockWindow(t *testing.T) {
 	c67Setup(t, c67Probe)
 	if freqHardMax != 690 || clockWindowHi() != 690 {
@@ -368,6 +381,7 @@ func TestC7UnlockWindow(t *testing.T) {
 	if freqHardMax != c67TestCeil || clockWindowHi() != 690 {
 		t.Fatalf("unlock on, not accepted: hard %d window %d", freqHardMax, clockWindowHi())
 	}
+	box2SaveProbe(box2ProbeRecord{Cap: 750, Top: 750, Level: 42})
 	if r := l15Post(t, handleOverclock, "/api/overclock", `{"acknowledge":true}`); r["ok"] != true {
 		t.Fatalf("accept: %v", r)
 	}
@@ -416,7 +430,8 @@ func TestC7UnlockWindow(t *testing.T) {
 	}
 }
 
-// With the unlock accepted the probe needs no per-run risk flag, and runs to the (capped) unlocked ceiling.
+// With the unlock accepted the probe needs no per-run risk flag, and runs to the (capped) unlocked ceiling: a
+// 730 cap is the top, and 730 (725 on the chips, the step already tried) adds no step of its own.
 func TestC7ProbeFollowsUnlockedCeiling(t *testing.T) {
 	m := c67Setup(t, c67Unlock)
 	saveOverclock(overclockState{Acknowledged: true, At: "x", Caps: map[string]int{"freq": 730}})
@@ -424,10 +439,10 @@ func TestC7ProbeFollowsUnlockedCeiling(t *testing.T) {
 		t.Fatalf("start with the unlock accepted: %v", r)
 	}
 	st := l15WaitProbe(t)
-	if a := st.Axes[0]; a.HardMax != 730 || a.Cap != 730 {
-		t.Fatalf("result %+v, want the 730 cap as the top", a)
+	if a := st.Axes[0]; a.HardMax != 730 || a.Cap != 725 {
+		t.Fatalf("result %+v, want the 730 cap as the top, clean to 725", a)
 	}
-	if hi := c67MaxWrite(m); hi != 730 {
+	if hi := c67MaxWrite(m); hi != 725 {
 		t.Fatalf("wrote up to %d", hi)
 	}
 }

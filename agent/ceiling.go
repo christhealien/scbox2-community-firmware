@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -423,10 +424,10 @@ func handleCeiling(w http.ResponseWriter, r *http.Request) {
 			ceilMu.Lock()
 			ceilSt = ceilingState{Running: true, Phase: "starting", StartedAt: time.Now().Format("2006-01-02 15:04"),
 				Axes: []ceilingAxis{{Name: "freq", Label: "Frequency", Unit: "MHz", SafeMax: freqMax, HardMax: probeHi,
-					Step: ceilBox2Step, State: "todo", Held: true}}}
+					Step: 12, State: "todo", Held: true}}} // (Step: the 12.5 MHz chip grid, shown only)
 			ceilMu.Unlock()
-			ceilLog("start — baseline %d MHz / %s (stock, kept for every step); steps of %d MHz to %d MHz, each held %s while mining; back to the baseline at the end",
-				base.FreqMHz, box2LevelText(base.VrunMv), ceilBox2Step, probeHi, ceilBox2Hold)
+			ceilLog("start — baseline %d MHz / %s (stock, kept for every step); steps %s MHz (the chips' 12.5 MHz grid) up to %d MHz, each held %s while mining; stops on heat, HW errors over %.0f %%, a chip or board dropout, or over %.0f W; back to the baseline at the end",
+				base.FreqMHz, box2LevelText(base.VrunMv), intsText(ceilBox2StepList(freqMax, probeHi)), probeHi, ceilBox2Hold, ceilHWPctMax, ceilBox2PowerMaxW)
 			go runCeilingProbe(base)
 			writeJSON(w, map[string]any{"ok": true, "note": "probe started"})
 			return
@@ -447,5 +448,21 @@ func handleCeiling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := ceilSnapshot()
-	writeJSON(w, map[string]any{"ok": true, "state": s, "unlocked": ocUnlocked()})
+	resp := map[string]any{"ok": true, "state": s, "unlocked": ocUnlocked()}
+	if model.Plan == planBox2V { // this unit's saved result, and what it lets the unlock open (ceilingbox2.go)
+		resp["probe"], resp["limit"], resp["unlock_err"] = box2ProbeView(), box2ProbeLimit(), box2UnlockErr()
+	}
+	writeJSON(w, resp)
+}
+
+// intsText: 700, 720, 725 → "700/720/725" (the probe's steps, for its log).
+func intsText(v []int) string {
+	var b []byte
+	for i, x := range v {
+		if i > 0 {
+			b = append(b, '/')
+		}
+		b = strconv.AppendInt(b, int64(x), 10)
+	}
+	return string(b)
 }

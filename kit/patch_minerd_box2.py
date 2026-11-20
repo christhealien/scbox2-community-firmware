@@ -30,6 +30,22 @@ Sites (HARD RULE 6: no OEM cloud / Chinese hosts / internet unless the owner ena
           system('echo "nameserver 114.114.114.114" > /etc/resolv.conf') -- a public DNS server in China.
           The command becomes "true" (NUL-padded, same length): no DNS server is invented.
 
+A failed save never blocks a plan (v0.5.2). PUT /mcb/setting's handler (0xf4cc; "Set Settings: " at 0xf4ea) builds
+the plan (0xf334), saves the request as cpbsetting.json (0xf5a0: bl 0x13538, the OEM's JSON-to-file writer, which
+logs its own "Open File"/"Write File %s Error"), sets the temperature target (0xf5be: bl 0xf430), rewrites
+bfgminer.json with the new plan line (0xf5d4: bl 0x143c4), answers 200 (0xf5f8) and only then hands the plan to the
+miner (0xf63c..0xf646). Each failed step jumped to the shared error tail (0xf572: log, r5 = 3, skip everything after
+it): with the settings partition read-only every fan step and the thermal guard's 100 % were dropped (seen on a
+miner at 83 C). Two sites:
+  0xf5aa  after the cpbsetting.json save: "bge 0xf5be" -> "b 0xf5be": a failed save goes on with the plan (the writer
+          has logged it). (cmp r0,#0 at 0xf5a8 is left; its flags are unused now.)
+  0xf5e2  the bfgminer.json step's failure branch (mov r0,r4; blx lock; ldr r1,=msg; add r0,sp,#0x48 -- 10 bytes,
+          0xf5ec onward is shared with two other error paths and stays) becomes: ldr r1,=0x1f698 ("Dump To
+          bfgminer.json Error", the literal at 0xf688 the original loaded); movs r0,#0; bl 0x117f8 (the log call the
+          tail makes, level 0 as there); b 0xf5f2 (the 200 answer and the hand-over to the miner).
+With the settings in RAM (v0.5.2's cfgmount) neither save normally fails; this keeps the fans independent of the
+storage even when the RAM copy couldn't be made (a full RAM folder, or the partition used directly).
+
 NOTE (left to the build/init lanes, not done here per the design's EXACT BINARY PATCH SITES list): research
 lane R06 also found minerd's only wifi_ap_enable caller at 0xb3f70eea / va 0x1ab3a (brings up hostapd
 "GSMINER" WPA2 "123456789" + dnsmasq + ip_forward=1). The design kills the stock open-AP via the wifi binary
@@ -51,6 +67,10 @@ SITES = (
     (0x18c7e, "01f047fb", "aff30080", "monitor thread: OEM miner-finder POST not called"),
     (0x1de9c, "a3693d46", "3d4608e0", "PUT /mcb/cmossetting no longer derefs the absent cloud client"),
     (0x1ab3a, "f0f70eea", "aff30080", "wifi_ap_enable starter not called (defense-in-depth: the Wi-Fi stack is removed and product.json forces wifi:0, so the open AP can never come up anyway)"),
+    # v0.5.2: PUT /mcb/setting goes on with the plan when a save fails (see the docstring)
+    (0xf5aa, "08da", "08e0", "PUT /mcb/setting: a failed cpbsetting.json save no longer drops the plan (bge -> b)"),
+    (0xf5e2, "2046fbf77aec274912a8", "2949002002f007f902e0",
+     "PUT /mcb/setting: a failed bfgminer.json update is logged and the plan still goes to the miner"),
 )
 
 # (va, orig_bytes, replacement_bytes) -- replacement is NUL-padded to the original length.

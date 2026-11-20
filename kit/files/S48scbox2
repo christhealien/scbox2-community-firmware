@@ -1,12 +1,15 @@
 #!/bin/sh
 # scbox2-agent: the SC Box II control panel (port 8080; port 80 redirects to it).
 #
-#   * Config lives on the 3 MB FAT at /mnt/config (/dev/spiblock2), mounted by S38initdir.  The panel's
-#     settings (password, SSH host key, fan/network settings, ...) are in /mnt/config/scbox2.
+#   * Config lives on the 3 MB FAT /dev/spiblock2. From v0.5.2 S38initdir (/usr/libexec/scbox2/cfgmount) mounts it
+#     read-only at /mnt/cfgflash and every program works on a RAM copy at /mnt/config: normal running writes nothing
+#     to the flash. A setting that must survive a reboot is saved in a short write window by whoever changes it (the
+#     panel, the SSH server, these scripts with /usr/libexec/scbox2/cfgwrite). The panel's settings (password, SSH
+#     host key, fan/network settings, ...) are in /mnt/config/scbox2.
 #   * Updates: the root is a read-only squashfs, so the panel's Settings -> Firmware update writes a whole new
-#     system image (.ius, checked against the release, the panel password asked again) and reboots; on the
-#     owner's build only once that is commissioned. There is no rollback (the flash holds one system): an SD
-#     card with a known-good image is always the recovery, and the usual way to install.
+#     system image (.ius, checked against the release, the panel password asked again) and reboots. There is no
+#     rollback (the flash holds one system): an SD card with a known-good image is always the recovery, and the
+#     usual way to install.
 #   * product.json is validated and bind-mounted over /root/product.json with "wifi":0 forced on, so
 #     minerd never tries to start Wi-Fi (the board has no Wi-Fi chip; the Wi-Fi stack is removed).
 #   * Before the panel starts we require S38initdir's /mnt/config mount and a working /dev/urandom
@@ -18,6 +21,112 @@
 
 CFG=/mnt/config/scbox2
 OLDCFG=/mnt/config/sclite	# where test builds before v0.3.0 kept the same settings
+SAVE=/usr/libexec/scbox2/cfgwrite	# a file of /mnt/config onto the settings partition (a short write window)
+
+# syslog_remote: Settings -> Troubleshooting "send the system log to this computer" (off by default; every SC Box II
+# build offers it).
+# With $CFG/syslog-remote holding ipv4:port, syslogd is started again (as S01logging starts it) with -R ipv4:port -L,
+# so every line also goes to that computer over UDP as it is logged (a freeze can't take what was already sent).
+# An IPv4 address only, never a host name: busybox syslogd looks a name up in its main loop and would hold up
+# /dev/log while a name server doesn't answer. Without the file: syslogd as stock (only restarted when it ran with
+# -R). The panel runs "$0 syslog" when the setting changes. The old syslogd is waited for (up to ~5 s, then
+# killed): two never run at once. Exit 1 when syslogd couldn't be restarted (the panel says so).
+
+# syslog_addr_ok <ipv4:port>: exactly 4 octets 0-255 (no empty one, no leading zero, not 0.0.0.0, not multicast),
+# the port 1-65535 without a leading zero (the panel's own check, syslogRemoteNorm).
+syslog_addr_ok() {
+	case "$1" in *[!0-9.:]*|*:*:*|*..*|.*|*.:*|*:) return 1 ;; *.*.*.*.*:*) return 1 ;; *.*.*.*:*) ;; *) return 1 ;; esac
+	a=${1%%:*}; p=${1#*:}
+	n=0; first=
+	for x in $(echo "$a" | tr . ' '); do
+		n=$((n + 1))
+		case "$x" in ""|0?*|*[!0-9]*) return 1 ;; esac
+		[ ${#x} -le 3 ] && [ "$x" -le 255 ] || return 1
+		[ -z "$first" ] && first=$x
+	done
+	[ $n -eq 4 ] || return 1
+	[ "$a" != 0.0.0.0 ] || return 1
+	[ "$first" -ge 224 ] && [ "$first" -le 239 ] && return 1
+	case "$p" in ""|0*|*[!0-9]*) return 1 ;; esac
+	[ ${#p} -le 5 ] && [ "$p" -le 65535 ] || return 1
+	return 0
+}
+
+# syslog_lock / syslog_unlock: one syslog step at a time (the panel's restart and the boot's, or two of the panel's):
+# a mkdir lock (this busybox has no flock), holding the holder's pid; a lock whose holder is gone is stale and
+# taken over. Gives up after ~15 s.
+SYSLOG_LOCK=/var/run/scbox2-syslog.lock
+syslog_lock() {
+	i=0
+	while ! mkdir $SYSLOG_LOCK 2>/dev/null; do
+		h=$(cat $SYSLOG_LOCK/pid 2>/dev/null)
+		if [ -n "$h" ] && [ ! -d /proc/$h ] && [ "$(cat $SYSLOG_LOCK/pid 2>/dev/null)" = "$h" ]; then
+			rm -rf $SYSLOG_LOCK	# its holder is gone (killed): stale
+			continue
+		fi
+		if [ -z "$h" ] && [ $i -ge 20 ]; then
+			rm -rf $SYSLOG_LOCK	# no holder written after ~2 s: left by a step killed between mkdir and its pid
+			continue
+		fi
+		i=$((i + 1))
+		if [ $i -ge 150 ]; then
+			echo "scbox2: another system-log step is still running: not starting another" >&2
+			return 1
+		fi
+		usleep 100000
+	done
+	echo $$ > $SYSLOG_LOCK/pid
+}
+syslog_unlock() { rm -rf $SYSLOG_LOCK; }
+
+syslog_remote() {
+	syslog_lock || return 1
+	syslog_remote_locked
+	r=$?
+	syslog_unlock
+	return $r
+}
+
+syslog_remote_locked() {
+	R=$(head -n 1 $CFG/syslog-remote 2>/dev/null | tr -d ' \t\r')
+	case "$R" in ""|*:*) ;; *) R=$R:514 ;; esac
+	if [ -n "$R" ] && ! syslog_addr_ok "$R"; then
+		echo "scbox2: syslog-remote ignored (not an IPv4 address with a port 1-65535): the system log stays on the miner"
+		R=
+	fi
+	if [ -z "$R" ] && ! grep -q -- '-R' /proc/$(cat /var/run/syslogd.pid 2>/dev/null)/cmdline 2>/dev/null; then
+		return 0	# off, and syslogd runs as stock: leave it alone
+	fi
+	start-stop-daemon -K -q -p /var/run/syslogd.pid
+	i=0
+	while [ $i -lt 50 ] && pidof syslogd >/dev/null; do i=$((i + 1)); usleep 100000; done
+	if pidof syslogd >/dev/null; then
+		kill -9 $(pidof syslogd) 2>/dev/null
+		i=0
+		while [ $i -lt 10 ] && pidof syslogd >/dev/null; do i=$((i + 1)); usleep 100000; done
+		if pidof syslogd >/dev/null; then
+			echo "scbox2: the old syslogd doesn't exit: not starting another" >&2
+			return 1
+		fi
+	fi
+	rm -f /var/run/syslogd.pid
+	if [ -n "$R" ]; then
+		start-stop-daemon -b -S -q -m -p /var/run/syslogd.pid --exec /sbin/syslogd -- -n -R "$R" -L
+	else
+		start-stop-daemon -b -S -q -m -p /var/run/syslogd.pid --exec /sbin/syslogd -- -n
+	fi
+	i=0
+	while [ $i -lt 20 ] && ! pidof syslogd >/dev/null; do i=$((i + 1)); usleep 100000; done
+	if ! pidof syslogd >/dev/null; then
+		echo "scbox2: syslogd didn't start again" >&2
+		return 1
+	fi
+	if [ -n "$R" ]; then
+		echo "scbox2: the system log is also sent to $R (UDP)"
+	else
+		echo "scbox2: the system log is kept on the miner only"
+	fi
+}
 
 wait_for() {	# wait_for <path> <seconds> : succeed as soon as <path> exists, else time out
 	i=0
@@ -34,7 +143,12 @@ case "$1" in
 
 	# --- S38initdir must have mounted the config FAT.  If it did not (a corrupt or missing FAT), the
 	# panel still runs, but with config writes disabled: raise a flag the panel reads, don't wedge boot.
-	if grep -q " /mnt/config " /proc/mounts 2>/dev/null; then
+	if grep -q " /mnt/cfgflash " /proc/mounts 2>/dev/null; then
+		: # the settings in RAM, the partition read-only (cfgmount): each save opens its own write window
+	elif [ -s /tmp/scbox2-cfg-broken ]; then
+		echo "scbox2: WARNING $(cat /tmp/scbox2-cfg-broken)"
+	elif grep -q " /mnt/config " /proc/mounts 2>/dev/null; then
+		# the partition used directly (cfgmount fell back to it, /tmp/scbox2-cfg-direct says why)
 		rm -f /tmp/scbox2-cfg-broken
 		# prove it is actually writable (a FAT mounted read-only after errors=remount-ro is not)
 		if ( : > /mnt/config/.scbox2-wtest ) 2>/dev/null; then
@@ -53,6 +167,7 @@ case "$1" in
 	# directory doesn't exist yet, so it can never overwrite settings already made under the new name.
 	if [ -d $OLDCFG ] && [ ! -e $CFG ]; then
 		if mv $OLDCFG $CFG 2>/dev/null; then
+			$SAVE ${OLDCFG#/mnt/config/} ${CFG#/mnt/config/}
 			echo "scbox2: settings moved from $OLDCFG to $CFG"
 		else
 			echo "scbox2: WARNING could not move $OLDCFG to $CFG; starting with fresh settings"
@@ -65,24 +180,30 @@ case "$1" in
 	# restore included) can open it.
 	rm -f /dev/watchdog /dev/watchdog0
 
+	# the system log to another computer too, when set (Settings -> Recovery; the public release removes the setting)
+	[ -e $CFG/syslog-remote ] && syslog_remote
+
 	# network and crash settings for this kernel (Linux 3.10 without later fixes)
 	[ -x /usr/libexec/scbox2/sysctl ] && /usr/libexec/scbox2/sysctl
 
-	rm -f /mnt/config/minerd/settings/qomo.json	# a factory Litecoin config with someone else's pools (unused)
+	# a factory Litecoin config with someone else's pools (unused)
+	[ -e /mnt/config/minerd/settings/qomo.json ] && rm -f /mnt/config/minerd/settings/qomo.json &&
+		$SAVE minerd/settings/qomo.json
 
 	# the miner's API: write access from 127.0.0.1 only (a config copied by an older build said "A:0/0", any
 	# address; the API is bound to loopback anyway). Rewritten only when it still says so.
 	B=/mnt/config/bfgminer/bfgminer.json
 	if grep -q '"W:127.0.0.1,A:0/0"' $B 2>/dev/null; then
 		sed 's|"W:127.0.0.1,A:0/0"|"W:127.0.0.1"|' $B > $B.tmp 2>/dev/null && grep -q '"W:127.0.0.1"' $B.tmp &&
-			mv -f $B.tmp $B && echo "scbox2: miner API limited to 127.0.0.1"
+			mv -f $B.tmp $B && $SAVE bfgminer/bfgminer.json && echo "scbox2: miner API limited to 127.0.0.1"
 		rm -f $B.tmp
 	fi
 
-	# this miner's random seed (loaded by S38initdir): a fresh one every 6 hours, in case the power is cut
-	[ -x /usr/libexec/scbox2/seed ] && /usr/libexec/scbox2/seed loop </dev/null >/dev/null 2>&1 &
+	# (this miner's random seed: loaded and renewed by S38initdir, saved again at shutdown by S20urandom; no longer
+	# every 6 hours: nothing is written to the flash while the miner runs)
 
-	# /etc/localtime points here; until a time zone is chosen in the panel it's the OEM's (China, UTC+8)
+	# /etc/localtime points here; until a time zone is chosen in the panel it's the OEM's (China, UTC+8) (in RAM:
+	# made again at every boot until a zone is chosen)
 	[ -s $CFG/localtime ] || cp /etc/localtime.stock $CFG/localtime 2>/dev/null
 
 	# ---------------------------------------------------------------- product.json overlay (R15 / Wi-Fi)
@@ -132,6 +253,9 @@ case "$1" in
 	) &
 	echo $! > /var/run/scbox2-agent.pid
 	;;
+  syslog)
+	syslog_remote || exit 1
+	;;
   stop)
 	echo -n "Stopping scbox2-agent..."
 	[ -f /var/run/scbox2-agent.pid ] && kill $(cat /var/run/scbox2-agent.pid) 2>/dev/null
@@ -139,7 +263,7 @@ case "$1" in
 	rm -f /var/run/scbox2-agent.pid
 	;;
   *)
-	echo "Usage: $0 {start|stop}" >&2
+	echo "Usage: $0 {start|stop|syslog}" >&2
 	exit 1
 	;;
 esac

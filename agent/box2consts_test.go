@@ -1,8 +1,9 @@
 package main
 
 // Box II constants groom: nothing the SC Box II uses comes from the SC Lite. The voltage is the OEM's level
-// (42–61, a higher level is a lower voltage), there is no PV, the overclock ceiling is undecided (C6/C7 refuse
-// above 690 MHz), and with C2 off no Box II path reports watts or J/TH.
+// (42–61, a higher level is a lower voltage), there is no PV, the overclock is capped at 750 MHz and opens only up
+// to this unit's own clean probe result (none: nothing above 690 MHz), and with C2 off no Box II path reports
+// watts or J/TH.
 
 import (
 	"encoding/json"
@@ -23,9 +24,9 @@ func TestBox2ProfileFacts(t *testing.T) {
 	if p.VCodeMin != 42 || p.VCodeMax != 61 || p.VCodeDir != vcodeUpIsLess {
 		t.Fatalf("voltage levels 42–61, a higher level is a lower voltage (C4): %+v", p)
 	}
-	// the overclock ceiling: none in the public release; the owner's first C6 ceiling (725 MHz) in the owner's build
-	if want := map[bool]int{true: 0, false: 725}[publicBuild]; p.OCHardMax != want {
-		t.Fatalf("overclock ceiling (public %v): want %d, got %d", publicBuild, want, p.OCHardMax)
+	// the hard overclock cap: 750 MHz in both builds (the unlock opens only up to this unit's probe result)
+	if p.OCHardMax != 750 {
+		t.Fatalf("overclock cap (public %v): want 750, got %d", publicBuild, p.OCHardMax)
 	}
 	// the SC Lite keeps its figures
 	l := profSCLite
@@ -34,18 +35,26 @@ func TestBox2ProfileFacts(t *testing.T) {
 	}
 }
 
-// C6 and C7 refuse anything above 690 MHz on the real profile, with every gate commissioned.
+// No probe result on this unit: C7 opens nothing above 690 MHz on the real profile, with every gate on and an
+// acknowledgment on disk; a profile with no overclock cap refuses the probe too.
 func TestBox2NoClockAbove690(t *testing.T) {
 	b10TempAuth(t)
 	p := profSCBox2
-	p.OCHardMax = 0 // an undecided ceiling (the public release's): nothing above 690 even with every gate on
 	p.Feat.ClockControl, p.Feat.VoltageControl, p.Feat.CeilingProbe, p.Feat.OverclockUnlock = true, true, true, true
+	b10SetModel(t, p)
+	if err := saveOverclock(overclockState{Acknowledged: true}); err != nil {
+		t.Fatal(err)
+	}
+	if hi := clockWindowHi(); hi != 690 || box2ProbeLimit() != 690 || box2UnlockErr() == "" {
+		t.Fatalf("no probe result: window %d, limit %d, why %q", hi, box2ProbeLimit(), box2UnlockErr())
+	}
+	if err := box2CheckTuple(700, 42); err == nil {
+		t.Fatal("700 MHz must be outside the clock window without a probe result")
+	}
+	p.OCHardMax = 0 // a profile with no overclock cap: nothing above 690 even with every gate on
 	b10SetModel(t, p)
 	if freqHardMax != 690 {
 		t.Fatalf("unlocked window %d, want 690", freqHardMax)
-	}
-	if err := saveOverclock(overclockState{Acknowledged: true}); err != nil {
-		t.Fatal(err)
 	}
 	if hi := clockWindowHi(); hi != 690 {
 		t.Fatalf("clock window with the unlock accepted: %d, want 690", hi)
@@ -122,11 +131,9 @@ func TestLiteExportUnchanged(t *testing.T) {
 	}
 }
 
-// The owner's build: the first C6 ceiling (725 MHz) opens only with the overclock (C7) commissioned.
-func TestBox2OwnerCeiling725(t *testing.T) {
-	if publicBuild {
-		t.Skip("the public release has no ceiling")
-	}
+// Both builds: the 750 MHz cap is the probe's top; the unlocked ceiling is 750 only with the overclock (C7) on,
+// and the window inside it follows this unit's probe result.
+func TestBox2Ceiling750(t *testing.T) {
 	b10TempAuth(t)
 	p := profSCBox2
 	p.Feat.ClockControl, p.Feat.VoltageControl, p.Feat.CeilingProbe = true, true, true
@@ -135,11 +142,22 @@ func TestBox2OwnerCeiling725(t *testing.T) {
 		t.Fatalf("without the overclock commissioned the window stays 690, got %d", freqHardMax)
 	}
 	if err := ceilBox2StartErr(true); err != nil && strings.Contains(err.Error(), "isn't decided") {
-		t.Fatalf("the owner's probe has a ceiling (725): %v", err)
+		t.Fatalf("the probe has a cap (750): %v", err)
+	}
+	if hi := ceilBox2Hi(); hi != 750 {
+		t.Fatalf("the probe's top is %d, want 750", hi)
 	}
 	p.Feat.OverclockUnlock = true
 	b10SetModel(t, p)
-	if freqHardMax != 725 {
-		t.Fatalf("with the overclock commissioned the window opens to 725, got %d", freqHardMax)
+	if freqHardMax != 750 {
+		t.Fatalf("with the overclock on the hard ceiling is 750, got %d", freqHardMax)
+	}
+	saveOverclock(overclockState{Acknowledged: true})
+	if hi := clockWindowHi(); hi != 690 {
+		t.Fatalf("no probe result: the window stays 690, got %d", hi)
+	}
+	box2SaveProbe(box2ProbeRecord{Cap: 720, FailAt: 725, Top: 750, Level: 42})
+	if hi := clockWindowHi(); hi != 720 {
+		t.Fatalf("probe clean to 720: the window opens to 720, got %d", hi)
 	}
 }

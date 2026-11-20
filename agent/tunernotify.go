@@ -265,7 +265,9 @@ func writeTunerMarker(e *tunerEngine) error {
 	return writeAtomic(tunerMarkerPath(), b, 0o644) // a power cut mid-write mustn't leave a marker the next start can't read
 }
 
-func clearTunerMarker() { os.Remove(tunerMarkerPath()) }
+// clearTunerMarker: the restart marker gone, from the flash too (cfgRemove): on the SC Box II an os.Remove left the
+// flash copy, and a power cut after a run that ended well made the next start undo its trims and plan (v0.5.5 T1).
+func clearTunerMarker() { cfgRemove(tunerMarkerPath()) }
 
 // tunerTrimsBack: every chip trim back to what it was when the run started (the marker's record).
 func tunerTrimsBack(trims []chipTrim, set func(chain, chip int, mhz float64) error) (undone, failed int) {

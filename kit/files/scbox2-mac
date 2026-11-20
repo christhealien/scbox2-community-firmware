@@ -35,7 +35,9 @@ random)
 	if ! valid "$mac"; then
 		mac=""
 		if [ "$mode" = keep ] && valid "$cur"; then
-			echo "$cur" > $D/mac.tmp && mv $D/mac.tmp $D/mac && mac=$cur
+			# saved onto the settings partition too (a RAM copy while the miner runs: see /usr/libexec/scbox2/cfgmount)
+			echo "$cur" > $D/mac.tmp && mv $D/mac.tmp $D/mac && mac=$cur &&
+				${SCBOX2_CFGWRITE:-/usr/libexec/scbox2/cfgwrite} scbox2/mac 2>/dev/null
 		fi
 	fi ;;
 esac

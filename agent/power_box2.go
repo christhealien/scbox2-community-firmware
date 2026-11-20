@@ -5,19 +5,27 @@ package main
 // gate off nothing here runs and no file is read or written.
 //
 // The SC Lite clock×PV² model (power.go) does not transfer: different chips (36 ICT580 on one board), a different
-// power stage, and the Box II's "voltage" is a PWM trim CODE whose scale and direction are unknown. So this is a
-// per-setting table, not a model:
+// power stage, and the Box II's voltage is set as one of the OEM's levels. So the Box II has its own figures:
 //
-//   - The running setting is what the miner itself reports (cgminer API devs: "clock" and "voltage" = trim
-//     code), so it is right whichever way the setting was made (stock plan via minerd, or a later pgaset).
-//   - A setting with a wall-meter reading shows that reading (the owner's own unit, fans and PSU included).
-//   - A stock plan without a reading shows the OEM's published figure for that mode, marked ≈ and "OEM
-//     spec ±5 %" (source: the OEM's BOX II product page; see REPORT.md).
-//   - Any other setting shows NO number: "not calibrated for this setting". No interpolation between the plans
-//     (they differ in clock AND trim code, and the code's effect on the rail is unmeasured) and no extrapolation.
+//   - The running setting is what the miner itself reports (cgminer API devs: "clock" and "voltage" = the level),
+//     so it is right whichever way the setting was made (stock plan via minerd, or a later pgaset).
+//   - A setting with the owner's own wall-meter reading shows that reading (fans and PSU included): exact.
+//   - Otherwise an ESTIMATE, marked ≈, from wall-meter readings taken on one unit (C2/C7, docs/HARDWARE.md):
+//       690 MHz (687.5 on the chips) · 7.67 V  392 W    ~1.97 TH/s   (Stock High; the OEM states 400 W)
+//       525 MHz · 7.03 V                        251.8 W  ~1.51 TH/s   (Stock Low;  the OEM states 260 W)
+//       700 MHz · 7.67 V                        399.4 W  ~2.01 TH/s
+//       720 MHz (712.5 on the chips) · 7.67 V   406.9 W  ~2.04 TH/s
+//       725 MHz · 7.67 V                        413.5 W  ~1.98 TH/s   (HW errors rising)
+//     At one of these settings its own reading is shown; anywhere else in the window (525–750 MHz, the levels
+//     7.67–7.03 V) the curve through them: W = k × f × V², with f the clock the chips run (box2PLLClock) and V the
+//     level's volts (box2Volts), k fitted at Stock High (392 W at 687.5 MHz, 7.67 V). That one-constant curve
+//     goes through all five readings within 0.7 W (Stock Low: 251.5 W predicted for 251.8 W measured), so the
+//     wall power of this miner follows the chips' dynamic power, with no fixed part worth fitting. Past the
+//     readings (737.5/750 MHz, the levels between) it is an extrapolation: 750 MHz ≈ 427.6 W.
+//   - Outside that window: no number ("not estimated for this setting": calibrate it with a wall meter).
 //   - Watts are NOT scaled with the measured hashrate: at a fixed clock and rail the chips' draw doesn't follow
 //     share luck or the work-rate's noise, so scaling would make the figure jump for no reason. When the hashrate
-//     is well under what the setting made at calibration (or under spec) the view says so (low_hash) instead.
+//     is well under what the setting made when measured the view says so (low_hash) instead.
 //   - J/TH = watts ÷ the miner's reported hashrate (TH/s).
 
 import (
@@ -31,39 +39,102 @@ import (
 	"time"
 )
 
-// box2PowerSpec: the OEM's published wall power for a stock mode (BOX II product page, "Support SiaCoin
-// mining", on the OEM's website: default 1.9 T ±5 % · 400 W ±5 % · 211 W/T; low-power 1.45 T · 260 W ·
-// 179 W/T). Matched to the profile's stock tuples by mode: 1.9/1.45 = 1.31 ≈ 690/525 = 1.31.
-type box2PowerSpec struct {
+// box2PowerPoint: one wall-meter reading on the first unit (the uncalibrated estimate's anchor points). Mode is
+// the stock mode's key for the two stock plans, "" for the overclock readings (C7).
+type box2PowerPoint struct {
 	Mode  string
 	MHz   int
-	V     int
+	V     int // the voltage level as the miner reports it (42 = 7.67 V, 61 = 7.03 V)
 	Watts float64
 	THS   float64
 }
 
-var box2PowerSpecs = []box2PowerSpec{
-	{Mode: "Hashrate", MHz: 690, V: 42, Watts: 400, THS: 1.9},
-	{Mode: "Low-power", MHz: 525, V: 61, Watts: 260, THS: 1.45},
+var box2PowerPoints = []box2PowerPoint{
+	{Mode: "Hashrate", MHz: 690, V: 42, Watts: 392, THS: 1.97},
+	{Mode: "Low-power", MHz: 525, V: 61, Watts: 251.8, THS: 1.51},
+	{MHz: 700, V: 42, Watts: 399.4, THS: 2.01},
+	{MHz: 720, V: 42, Watts: 406.9, THS: 2.04},
+	{MHz: 725, V: 42, Watts: 413.5, THS: 1.98},
 }
 
+// box2PowerK: W per (MHz × V²), fitted at Stock High: 392 W at 687.5 MHz on the chips and 7.67 V.
+const box2PowerK = 392.0 / (687.5 * 7.67 * 7.67)
+
+// box2GHSPerMHz: the hashrate per MHz the chips run, from Stock High on the first unit (1.97 TH/s at 687.5 MHz);
+// the reference for the low-hashrate note where no reading was taken.
+const box2GHSPerMHz = 1970.0 / 687.5
+
 const (
-	box2SpecTolPct  = 5                                                 // the OEM's stated ± on power and hashrate
-	box2SpecSource  = "the OEM's published figure for this mode (±5 %)" // shown with an uncalibrated stock figure
-	box2PowerMaxCal = 8                                                 // settings with a reading (keeps the FAT file tiny)
-	box2LowHashFrac = 0.8                                               // under this × the reference hashrate: say so
-	box2CalSteadyS  = 600                                               // the miner should have hashed this long before a reading
-	box2CalMinW     = 50.0                                              // a plausible wall reading for this miner (its PSU is 1200 W)
+	box2EstMinMHz   = 525                                             // the estimate's clock window (the readings span 525–725)
+	box2EstMaxMHz   = 750                                             // (box2OCHardMax: the most any unit is probed to)
+	box2EstSource   = "estimate from wall-meter readings on one unit" // shown with an uncalibrated figure
+	box2EstMeasured = "measured with a wall meter on one unit"        // ... at one of the readings' own settings
+	box2EstTolPct   = 5                                               // the ± a unit may differ by (shown as a hint)
+	box2PowerMaxCal = 8                                               // settings with a reading (keeps the FAT file tiny)
+	box2LowHashFrac = 0.8                                             // under this × the reference hashrate: say so
+	box2CalSteadyS  = 600                                             // the miner should have hashed this long before a reading
+	box2CalMinW     = 50.0                                            // a plausible wall reading for this miner (its PSU is 1200 W)
 	box2CalMaxW     = 1200.0
 )
 
-func box2SpecFor(mhz, v int) (box2PowerSpec, bool) {
-	for _, s := range box2PowerSpecs {
+// box2PointFor: the first unit's reading at exactly this setting.
+func box2PointFor(mhz, v int) (box2PowerPoint, bool) {
+	for _, s := range box2PowerPoints {
 		if s.MHz == mhz && s.V == v {
 			return s, true
 		}
 	}
-	return box2PowerSpec{}, false
+	return box2PowerPoint{}, false
+}
+
+// box2ModeFor: the stock mode's key when (mhz, v) is a stock plan's setting, else "".
+func box2ModeFor(mhz, v int) string {
+	if p, ok := box2PointFor(mhz, v); ok {
+		return p.Mode
+	}
+	return ""
+}
+
+// box2EstimateWatts: the uncalibrated wall power for a setting and the hashrate it made (TH/s), and whether it
+// is the first unit's own reading there (measured) or the curve (ok=false outside 525–750 MHz or the levels).
+func box2EstimateWatts(mhz, v int) (watts, ths float64, measured, ok bool) {
+	if p, found := box2PointFor(mhz, v); found {
+		return p.Watts, p.THS, true, true
+	}
+	lo, hi := model.VCodeMin, model.VCodeMax
+	if lo <= 0 || hi <= 0 {
+		lo, hi = 42, 61
+	}
+	if mhz < box2EstMinMHz || mhz > box2EstMaxMHz || v < lo || v > hi {
+		return 0, 0, false, false
+	}
+	f := box2PLLClock(float64(mhz))
+	if f <= 0 {
+		return 0, 0, false, false
+	}
+	volts, _ := box2Volts(v)
+	return math.Round(box2PowerK*f*volts*volts*10) / 10, math.Round(box2GHSPerMHz*f/10) / 100, false, true
+}
+
+// box2UnitWatts: this unit's wall power at a setting, for a limit (the probe's 460 W): its own meter reading
+// there, else the estimate scaled by how this unit's Stock High reading (if any) compares with the first
+// unit's; src says which. 0 when there is no figure.
+func box2UnitWatts(mhz, v int) (float64, string) {
+	c := getBox2PowerConfig()
+	if k, i := c.find(mhz, v); i >= 0 {
+		return k.Watts, "this unit's wall-meter reading"
+	}
+	w, _, _, ok := box2EstimateWatts(mhz, v)
+	if !ok {
+		return 0, ""
+	}
+	hf, hv := box2HashrateV()
+	if k, i := c.find(hf, hv); i >= 0 {
+		if ref, _, _, ok := box2EstimateWatts(hf, hv); ok && ref > 0 {
+			return w * k.Watts / ref, "estimate, scaled to this unit's Stock High reading"
+		}
+	}
+	return w, "estimate"
 }
 
 // box2PowerCal is one wall-meter reading, at one setting.
@@ -172,20 +243,21 @@ func powerViewBox2(d dashboard) map[string]any {
 		return map[string]any{"available": false, "reason": "no estimate on this model (" + model.Name + ")"}
 	}
 	c := getBox2PowerConfig()
-	var specs []map[string]any
-	for _, s := range box2PowerSpecs {
-		specs = append(specs, map[string]any{"mode": s.Mode, "mhz": s.MHz, "v": s.V, "watts": s.Watts, "ths": s.THS})
+	var points []map[string]any
+	for _, s := range box2PowerPoints {
+		points = append(points, map[string]any{"mode": s.Mode, "mhz": s.MHz, "v": s.V, "watts": s.Watts, "ths": s.THS})
 	}
 	cals := []map[string]any{}
 	for _, k := range c.Cals {
 		e := map[string]any{"mhz": k.MHz, "v": k.V, "watts": k.Watts, "ghs": k.GHS, "fan_rpm": k.FanRPM, "at": k.At}
-		if s, ok := box2SpecFor(k.MHz, k.V); ok {
-			e["mode"] = s.Mode
+		if m := box2ModeFor(k.MHz, k.V); m != "" {
+			e["mode"] = m
 		}
 		cals = append(cals, e)
 	}
 	v := map[string]any{"available": true, "model": "box2", "mains_v": c.mains(), "calibrated": false,
-		"factor": 0.0, "specs": specs, "cals": cals, "spec_tol_pct": box2SpecTolPct, "source": ""}
+		"factor": 0.0, "points": points, "cals": cals, "est_tol_pct": box2EstTolPct, "source": "",
+		"est_range": []int{box2EstMinMHz, box2EstMaxMHz}, "k": box2PowerK}
 	if !d.OK || d.GHS <= 0 {
 		v["reason"] = "shown while hashing"
 		return v
@@ -201,16 +273,19 @@ func powerViewBox2(d dashboard) map[string]any {
 		watts, refGHS = k.Watts, k.GHS
 		v["calibrated"], v["source"], v["factor"] = true, "meter", 1.0
 		v["cal_watts"], v["cal_at"], v["cal_mhz"], v["cal_v"] = k.Watts, k.At, k.MHz, k.V
-	} else if s, ok := box2SpecFor(mhz, code); ok {
-		watts, refGHS = s.Watts, s.THS*1000
-		v["source"], v["source_note"], v["mode"] = "spec", box2SpecSource, s.Mode
+	} else if w, ths, measured, ok := box2EstimateWatts(mhz, code); ok {
+		watts, refGHS = w, ths*1000
+		v["source"], v["source_note"] = "estimate", box2EstSource
+		if measured {
+			v["source"], v["source_note"] = "measured", box2EstMeasured
+		}
 	} else {
-		// between or outside the plans: no reading here, and nothing to justify an inter/extrapolation
-		v["reason"] = fmt.Sprintf("not calibrated for this setting (%d MHz · %s)", mhz, box2LevelText(code))
+		// outside the window the readings support (525–750 MHz, the stock levels' interval): no number
+		v["reason"] = fmt.Sprintf("not estimated for this setting (%d MHz · %s): calibrate it with a wall meter", mhz, box2LevelText(code))
 		return v
 	}
-	if s, ok := box2SpecFor(mhz, code); ok {
-		v["mode"] = s.Mode
+	if m := box2ModeFor(mhz, code); m != "" {
+		v["mode"] = m
 	}
 	v["watts"], v["amps"] = round1(watts), round1(watts/c.mains())
 	if ths := d.GHS / 1000; ths > 0.01 {
@@ -286,9 +361,9 @@ func handlePowerBox2(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, map[string]any{"ok": false, "err": "couldn't read the clock and voltage the miner runs; try again in a moment"})
 				return
 			}
-			if s, ok := box2SpecFor(mhz, code); ok {
-				if f := in.CalWatts / s.Watts; f < 0.6 || f > 1.5 {
-					writeJSON(w, map[string]any{"ok": false, "err": fmt.Sprintf("%.0f W is far from what the %s mode should draw (OEM spec: %.0f W ±%d %%). Check the meter is on this miner only and it's hashing", in.CalWatts, presetLabel(s.Mode), s.Watts, box2SpecTolPct)})
+			if est, _, _, ok := box2EstimateWatts(mhz, code); ok {
+				if f := in.CalWatts / est; f < 0.6 || f > 1.5 {
+					writeJSON(w, map[string]any{"ok": false, "err": fmt.Sprintf("%.0f W is far from what this setting should draw (about %.0f W, measured on one unit). Check the meter is on this miner only and it's hashing", in.CalWatts, est)})
 					return
 				}
 			}
@@ -307,7 +382,7 @@ func handlePowerBox2(w http.ResponseWriter, r *http.Request) {
 			activity.emit(fmt.Sprintf("⚡ power calibrated: %.0f W at %d MHz · %s (%.2f TH/s)", in.CalWatts, mhz, box2LevelText(code), d.GHS/1000))
 		}
 		if err := saveBox2PowerConfig(c); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		if !haveD {

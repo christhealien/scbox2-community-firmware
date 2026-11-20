@@ -414,7 +414,7 @@ func verboseGuard(now time.Time) {
 	if poolDownRecent(now) {
 		return // it stops because no pool answers, not because of debug mode
 	}
-	if os.Remove(flag) != nil {
+	if cfgRemove(flag) != nil {
 		return
 	}
 	b, _ := json.Marshal(map[string]any{"at": now.Unix(), "stops": n})
@@ -442,7 +442,7 @@ func chipHookGuard(now time.Time) {
 			}
 			return
 		}
-		if os.Remove(chipHookFlag()) == nil {
+		if cfgRemove(chipHookFlag()) == nil {
 			msg := "chip trims switched off: the mining program with chip trims didn't get going in 3 starts, so the miner runs without them (Controls → Chip trims to try again)"
 			chipHookOffNote(msg)
 			go activity.emit("⚠ " + msg)
@@ -452,7 +452,7 @@ func chipHookGuard(now time.Time) {
 	}
 	if _, err := os.Stat(chipHookLib); err != nil && intminerRunning() && procAgeSec("intminer") > 180 && !minerHasLib(brandChipLib) {
 		// the trim library isn't on the miner (a hand edit, a half-written update): the wrapper can't load it
-		if os.Remove(chipHookFlag()) == nil {
+		if cfgRemove(chipHookFlag()) == nil {
 			msg := "chip trims switched off: the chip-trim library (" + chipHookLib + ") is missing, so the miner runs without trims (reinstall the firmware update to bring it back)"
 			chipHookOffNote(msg)
 			go activity.emit("⚠ " + msg)
@@ -472,7 +472,7 @@ func chipHookGuard(now time.Time) {
 	if poolDownRecent(now) {
 		return
 	}
-	if os.Remove(chipHookFlag()) != nil {
+	if cfgRemove(chipHookFlag()) != nil {
 		return
 	}
 	msg := fmt.Sprintf("chip trims switched off: the mining program stopped %d times in 15 minutes with them on, so it now starts as %s own program (Controls → Chip trims to try again)", n, oemPoss())
@@ -502,7 +502,7 @@ func killEscalate(now time.Time) {
 	lastEscalated = v.LastKill
 	cmd := exec.Command("sh", "-c", "killall -9 intminer")
 	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))
-	cmd.Run()
+	traceWrite("spawn: killall -9 intminer (fan-fault stop escalated)")(cmd.Run())
 	go activity.emit("⛏ the mining program didn't stop 15 s after " + oemOf() + " watchdog told it to (fan fault): ended")
 }
 

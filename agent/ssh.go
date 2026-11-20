@@ -310,7 +310,7 @@ func sshServe(ln net.Listener) {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		if p := remoteIPOf(c.RemoteAddr()); p != nil && !peerAllowed(p) {
+		if !peerAllowed(remoteIPOf(c.RemoteAddr())) {
 			sshRefuseOutside(c) // from outside the local network: SSH isn't for the internet (access.go)
 			continue
 		}
@@ -473,7 +473,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			c.SSHPort = in.Port
 		}
 		if err := saveNetConfig(c); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "could not save: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		sshApply()

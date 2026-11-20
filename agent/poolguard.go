@@ -253,7 +253,10 @@ func handlePoolGuard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.Resume {
-			poolHoldRelease()
+			if err := poolHoldRelease(); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "err": "not resumed: the pool guard's hold couldn't be lifted (" + cfgSaveErr(err) + "). The miner stays on Idle; reboot it to repair the settings storage"})
+				return
+			}
 			pgMu.Lock()
 			pgActed = map[string]int{}
 			pgMu.Unlock()
@@ -309,11 +312,17 @@ var (
 	poolHoldMem   *poolHoldState // the hold while its file couldn't be written
 )
 
-func poolHoldRelease() {
-	os.Remove(poolHoldPath())
+// poolHoldRelease ends the hold. An error: its file couldn't be removed (a read-only settings storage), so the hold
+// stays (a safe state: the miner stays on Idle) until the storage can be written again.
+func poolHoldRelease() error {
+	err := cfgRemove(poolHoldPath())
+	if err != nil && (os.IsNotExist(err) || !fileExists(poolHoldPath())) {
+		err = nil
+	}
 	poolHoldMemMu.Lock()
 	poolHoldMem = nil
 	poolHoldMemMu.Unlock()
+	return err
 }
 
 // poolHold: the file being there is the hold (a damaged one, after a power cut, still holds).
@@ -391,7 +400,10 @@ func urlHost(u string) string {
 var pgRestartMiner = func() error {
 	cmd := exec.Command("sh", "-c", "killall intminer")
 	cmd.Env = append(os.Environ(), "PATH=/usr/sbin:/usr/bin:/sbin:/bin:"+os.Getenv("PATH"))
-	if out, err := cmd.CombinedOutput(); err != nil {
+	end := traceWrite("spawn: killall intminer (pool guard: restart the mining program)")
+	out, err := cmd.CombinedOutput()
+	end(err)
+	if err != nil {
 		return fmt.Errorf("%v %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

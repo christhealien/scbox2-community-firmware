@@ -113,6 +113,12 @@ func tunerForceEnd(t *tunerEngine, why string) {
 			}
 		}
 	}
+	// the marker says the run is over before anything else (v0.5.5 T1: marked first, so the copy a power cut leaves
+	// on the flash never reads as a run cut short); it stays only if the miner couldn't be put back: the run is
+	// over, so the next start puts the baseline back only if the miner is still on the run's last test setting
+	// (not over the owner's choice); trims that couldn't come off are taken off then (a marker without Ended would
+	// put the old baseline over whatever the owner chose meanwhile)
+	markTunerEndedTrims(trimsFailed > 0)
 	if b := t.baseAtom.Load(); b != nil && !t.cfg.DryRun && getCharge() == "tuner" {
 		if err := miningHoldErr(); err != nil {
 			put += "; the miner stays where the fan lock or the pool guard put it"
@@ -125,11 +131,6 @@ func tunerForceEnd(t *tunerEngine, why string) {
 			clearTunerMarker()
 		}
 	}
-	// the marker stays only if the miner couldn't be put back: the run is over, so the next start puts the
-	// baseline back only if the miner is still on the run's last test setting (not over the owner's choice);
-	// trims that couldn't come off are taken off then (a marker without Ended would put the old baseline over
-	// whatever the owner chose meanwhile)
-	markTunerEndedTrims(trimsFailed > 0)
 	swapCharge("tuner", "") // (not over a safety stop's "idle")
 	msg += ": the panel ended it" + put + ". Controls, Restart mining and updates work again; please save the tuner log and report it."
 	log.Print("tuner: " + msg)

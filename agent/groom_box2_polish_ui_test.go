@@ -11,20 +11,20 @@ import (
 // screen), with the tuner's dot where it matters (red: safety, yellow: needs you). The SC Lite page is unchanged.
 // The page's own functions run in node (l31Node), as in groom_box2_ui_test.go.
 
-var polishFuncs = []string{"renderControl", "ctrlWarn", "cclamp", "cstep", "lockBar", "hesc", "calNote", "estW", "boxVoltsTxt", "B2T",
+var polishFuncs = []string{"renderControl", "ctrlWarn", "cclamp", "cstep", "lockBar", "hesc", "calNote", "estW", "boxVoltsTxt", "B2T", "pubNoTunerP",
 	"b2VC", "b2Levels", "b2RuleLevel", "b2VoltCtl", "b2VOpts", "b2F4Note", "b2Name", "chargeTxt", "b2ModeAt", "b2SelTxt",
-	"imgDot", "imgMore", "b2Split", "b2More", "b2Fold", "b2Wrap", "b2Folds",
+	"imgDot", "imgMore", "b2OCBar", "b2EstW", "b2TopLevel", "b2Split", "b2More", "b2Fold", "b2Wrap", "b2Folds",
 	"renderAutoFan", "fanStatus", "fanUnit", "curveOptions",
-	"renderRecovery", "renderRecoveryBox2", "fmtWhen", "unexpText",
+	"renderRecovery", "renderRecoveryBox2", "fmtWhen", "unexpText", "renderTroubleshooting", "tsHelpHTML", "tsCode", "tsRecvCmd",
 	"renderPowerBox2", "pwSetting", "pwSrcText", "modelName", "renderModelBanner", "MCUTOFF",
 	"renderDisplay", "fmtShareDisp", "siShareJS", "sshBlock", "ctOpen", "ctTog", "ctWatchHTML", "ctStrongHTML",
-	"renderTunerForm", "tunerWizUI", "modeVal", "baseVal", "fanVal", "updateEstimate", "estHours", "tunerCfg", "TGAP",
+	"renderTunerForm", "tunerWizUI", "modeVal", "baseVal", "fanVal", "updateEstimate", "estHours", "tClockN", "tunerCfg", "TGAP",
 	"b2StepOpts", "b2StepTxt", "tB2Hint", "tTrimCost", "tB2Note"}
 
 // polishScript renders every changed section; V_<name> lines carry the HTML. Run with window._MODEL set (Box II) or not (SC Lite).
 const polishScript = `
 const BOX_V_MEAS={42:7.67,43:7.61,44:7.58,45:7.55,46:7.52,61:7.03};
-globalThis.confirm=()=>true;globalThis.toast=()=>{};globalThis.loadControl=()=>{};globalThis.setTimeout=()=>0;globalThis.clearTimeout=()=>{};
+globalThis.confirm=()=>true;globalThis.toast=()=>{};globalThis.loadControl=()=>{};globalThis.ocProbeRefresh=()=>{};globalThis.setTimeout=()=>0;globalThis.clearTimeout=()=>{};
 globalThis.loadMAC=()=>{};globalThis.cvOpen=()=>{};globalThis.loadChipTrim=()=>{};
 async function jpost(){return {j:{ok:true}};}
 let CTRL=null,FAN=null;const SHARELBL={};
@@ -44,6 +44,7 @@ FAN={config:{enabled:true,profile:'curve-balanced',throttle_enable:false,throttl
  profiles:{'curve-balanced':{label:'Balanced',builtin:true,mode:'curve'}},in_charge:''};
 renderAutoFan();out('autofan',$('fanbody').innerHTML);
 renderRecovery({ok:true,watchdog_running:false,keep_log:true,kept_before:1700000000});out('recovery',$('recbody').innerHTML);
+if(window._MODEL)renderTroubleshooting({ok:true,syslog_remote_avail:true,syslog_remote:'192.168.1.20:514'});out('troubleshooting',$('tsbody').innerHTML);
 renderChipTrim({enabled:false,limits:{min:-50,max:50,step:12.5},geo:{chips:36,pairs:18,box2:box2,fix:'lower the clock'},chains:[]});out('chiptrims',$('ctbody').innerHTML);
 renderDisplay({share_unit:'both',hash_unit:'ths'});out('display',$('dispbody').innerHTML);
 out('ssh',sshBlock({available:true,enabled:true,listening:true,port:22,username:'admin',fingerprint:'SHA256:x'},'10.0.0.5'));
@@ -143,14 +144,14 @@ func TestPolishBox2LongTextsFold(t *testing.T) {
 		}
 		polishFold(t, name("auto fan"), w("autofan"), "Changes here take effect straight away.", "Tips", "blake2b-asic-control")
 		polishFold(t, name("recovery"), w("recovery"), "it stays dead until the power is cut.", "Why there’s no watchdog", "kernel driver for the watchdog")
-		polishFold(t, name("recovery"), w("recovery"), "Saved copy from", "What it keeps", "last 48 KB")
+		polishFold(t, name("recovery"), w("recovery"), "Saved copy from", "What it keeps", "last 32 KB")
 		if !strings.Contains(w("recovery"), `id="reclog"`) || !strings.Contains(w("recovery"), "Keep the system log across restarts") {
 			t.Errorf("%s: the switch must stay: %s", name("recovery"), w("recovery"))
 		}
 		if !strings.Contains(w("chiptrims"), `id="ctHow" data-k="how" ontoggle="ctTog(this)"><summary>`) {
 			t.Errorf("%s: “How chip trims work” must start closed: %s", name("chip trims"), w("chiptrims"))
 		}
-		polishFold(t, name("power"), w("power"), "has no power sensor, and its watts can’t be worked out from the clock and voltage.", "How the figures work", "plug-in wall meter")
+		polishFold(t, name("power"), w("power"), "has no power sensor. Without your own wall-meter reading, the watts shown (≈) are an estimate measured on one unit.", "How the figures work", "plug-in wall meter")
 		polishFold(t, name("power"), w("power"), "", polishYellow+"How to calibrate", "let it hash at one setting for 10 minutes")
 		polishFold(t, name("best share numbers"), w("display"), "How best shares and records are shown", "How the numbers are counted", "units of 2<sup>32</sup>")
 		polishFold(t, name("ssh"), w("ssh"), "Signs in with your panel username and password", "Password and wrong tries", "Five wrong passwords")

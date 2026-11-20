@@ -818,6 +818,9 @@ func validateSchedule(s *schedule) error {
 			seen[k] = true
 		}
 		if !presetExists(r.Preset) {
+			if why := box2OutsideWhy(r.Preset); why != "" {
+				return fmt.Errorf("preset %q for the %s change is outside the current clock window (%s): pick another, or edit it on the Presets tab", r.Preset, r.Start, why)
+			}
 			return fmt.Errorf("preset %q for the %s change doesn't exist", r.Preset, r.Start)
 		}
 	}
@@ -828,6 +831,9 @@ func validateSchedule(s *schedule) error {
 		s.Base = schedBack
 	}
 	if !presetExists(s.Base) {
+		if why := box2OutsideWhy(s.Base); why != "" {
+			return fmt.Errorf("the rest of the time: preset %q is outside the current clock window (%s)", s.Base, why)
+		}
 		return fmt.Errorf("the rest of the time: preset %q doesn't exist", s.Base)
 	}
 	r := &s.Restart
@@ -903,7 +909,7 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 					s.Paused = nil
 				}
 			}); err != nil {
-				writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+				writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 				return
 			}
 			schedRunMu.Lock()
@@ -926,7 +932,7 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := saveSchedule(ns); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "err": "save failed: " + err.Error()})
+			writeJSON(w, map[string]any{"ok": false, "err": cfgSaveErr(err)})
 			return
 		}
 		schedRunMu.Lock()

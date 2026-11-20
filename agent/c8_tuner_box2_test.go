@@ -141,7 +141,7 @@ func TestC8Box2DefaultsAndValidation(t *testing.T) {
 	if d.MinMV != 42 || d.MaxMV != 42 || d.BaselineMHz != 690 || d.BaselineMV != 42 || d.PVGap != 0 {
 		t.Fatalf("Box II defaults not clock-only at the stock code: %+v", d)
 	}
-	if d.AbortC != 82 || d.FanTargetC != 77 || d.ChipTrim || d.BuildPresets {
+	if d.AbortC != 82 || d.FanTargetC != 72 || d.ChipTrim || d.BuildPresets {
 		t.Fatalf("Box II defaults: abort %v target %v trims %v presets %v", d.AbortC, d.FanTargetC, d.ChipTrim, d.BuildPresets)
 	}
 	// the clock axis: the whole Box II window (Low-power stock clock to Hashrate), in the chips' own steps; the
@@ -159,9 +159,9 @@ func TestC8Box2DefaultsAndValidation(t *testing.T) {
 		"abort 85 (over the profile's 84)":     func(c *tunerConfig) { c.AbortC = 85 },
 		"abort 86 (the cut-off)":               func(c *tunerConfig) { c.AbortC = 86 },
 		"fan target over 77 (fan hold on)":     func(c *tunerConfig) { c.FanHold, c.FanTargetC = true, 79 },
-		"rebuild":                              func(c *tunerConfig) { c.Mode = "rebuild" },
-		"presets":                              func(c *tunerConfig) { c.BuildPresets = true },
-		"chip trims":                           func(c *tunerConfig) { c.ChipTrim = true },
+		"rebuild without the fan hold":         func(c *tunerConfig) { c.Mode = "rebuild" },
+		"presets without the fan hold":         func(c *tunerConfig) { c.BuildPresets = true },
+		"chip trims, not commissioned":         func(c *tunerConfig) { c.ChipTrim, c.DryRun = true, false },
 		"clock step off the 12.5 grid":         func(c *tunerConfig) { c.Step = 10 },
 		"clock under the window":               func(c *tunerConfig) { c.LowestMHz = 450 },
 		"clock over the window":                func(c *tunerConfig) { c.HighestMHz = 700 },
@@ -363,7 +363,7 @@ func TestC8Box2VoltageStepsWhenDirectionKnown(t *testing.T) {
 		t.Run(map[vcodeDir]string{vcodeUpIsLess: "up-is-less", vcodeUpIsMore: "up-is-more"}[dir], func(t *testing.T) {
 			c8Box2(t, true, dir)
 			cfg := c8Cfg()
-			cfg.LowestMHz, cfg.HighestMHz, cfg.Step = 690, 690, 12.5 // one clock: "688" (runs 687.5, as 690 does)
+			cfg.LowestMHz, cfg.HighestMHz, cfg.Step = 688, 688, 12.5 // one clock: "688" (runs 687.5, as 690 does; v0.5.4: a 690–690 run tests 690 itself)
 			cfg.MinMV, cfg.MaxMV, cfg.MVStep = 42, 61, 1
 			cfg, note := box2TunerNormalize(cfg)
 			if note != "" || cfg.MinMV != 42 || cfg.MaxMV != 61 {

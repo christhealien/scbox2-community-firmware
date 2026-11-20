@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"sclite-agent/internal/cfgwin"
 )
 
 const (
@@ -159,6 +161,8 @@ func HostKey(path, comment string, before func(), logf func(string, ...any)) (ss
 	os.MkdirAll(filepath.Dir(path), 0o700)
 	if err := os.WriteFile(path, pem.EncodeToMemory(blk), 0o600); err != nil {
 		logf("ssh: could not save the host key (%v); it will change on restart", err)
+	} else if err := cfgwin.CommitPaths(path); err != nil { // the SC Box II: onto the settings partition too
+		logf("ssh: could not save the host key on the settings partition (%v); it will change at the next boot", err)
 	}
 	s, err := ssh.NewSignerFromKey(priv)
 	if err == nil {
